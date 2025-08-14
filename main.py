@@ -1,5 +1,4 @@
 import os
-import json
 import asyncio
 import time
 from pyrogram import Client, filters
@@ -21,14 +20,14 @@ LOG_CHANNEL_ID = int(os.environ.get("LOG_CHANNEL_ID", 0))
 
 # --- Database Configuration ---
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
-DATABASE_NAME = "TA_HD_File_Share" # <--- এখানে ডাটাবেজের নাম পরিবর্তন করা হয়েছে।
+DATABASE_NAME = "TA_HD_File_Share"
 
 # --- In-memory data structures ---
 # These will now be loaded from and saved to MongoDB
-filters_dict = {}  
-user_list = set()  
+filters_dict = {}
+user_list = set()
 banned_users = set()
-join_channels = []  
+join_channels = []
 restrict_status = False
 autodelete_filters = {}
 last_filter = None
@@ -333,7 +332,7 @@ async def channel_delete_handler(client, messages):
             keyword = message.text.lower().replace('#', '')
             if keyword in filters_dict:
                 await delete_filter_from_db(keyword)
-                await load_filters()  # Reload filters after deletion
+                await load_filters()
                 await app.send_message(
                     ADMIN_ID,
                     f"🗑️ **Filter '{keyword}' has been deleted** because the original message was removed from the channel.",
