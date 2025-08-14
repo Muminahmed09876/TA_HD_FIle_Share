@@ -16,7 +16,7 @@ MONGODB_URL = os.getenv('MONGODB_URL', 'YOUR_MONGODB_URL')
 
 # MongoDB setup
 mongo = MongoClient(MONGODB_URL)
-db = mongo['file_share_bot']
+db = mongo['TA_HD_File_Share']  # <-- MongoDB name set here!
 
 # Collections
 users_col = db.users
@@ -330,9 +330,18 @@ async def delete_later(chat_id, message_id, delay):
 # Run Bot & Flask (use threading or gunicorn for prod)
 if __name__ == "__main__":
     import threading
+
+    # Fix Pyrogram run in thread for Python 3.10+ (asyncio event loop)
     def run_bot():
-        app.run()
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            app.run()
+        except Exception as e:
+            print("Bot error:", e)
+
     def run_flask():
-        flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
+        flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+
     threading.Thread(target=run_bot).start()
     threading.Thread(target=run_flask).start()
