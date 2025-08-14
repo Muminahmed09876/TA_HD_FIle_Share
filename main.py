@@ -1,5 +1,4 @@
 import os
-import json
 import asyncio
 import time
 from pyrogram import Client, filters
@@ -303,7 +302,7 @@ async def channel_text_handler(client, message):
             return
 
         last_filter = keyword
-        save_admin_data() # Save the new last_filter to MongoDB
+        save_admin_data() 
         
         if keyword not in filters_dict:
             filters_dict[keyword] = []
@@ -361,7 +360,7 @@ async def channel_delete_handler(client, messages):
             if last_filter == keyword:
                 last_filter = None
                 
-            save_admin_data() # Save the change to last_filter
+            save_admin_data()
 
             await app.send_message(
                 ADMIN_ID,
@@ -628,7 +627,7 @@ async def auto_delete_cmd(client, message):
 
 @app.on_callback_query(filters.regex("check_join_status"))
 async def check_join_status_callback(client, callback_query):
-    user_id = callback_user.id
+    user_id = callback_query.from_user.id
     if await is_user_member(client, user_id):
         await callback_query.message.edit_text("✅ **You have successfully joined the channels!** Please send the link again to get your files.", reply_markup=None)
     else:
@@ -678,7 +677,12 @@ async def main():
 
     try:
         db_client = MongoClient(MONGODB_URI)
-        db = db_client.get_database()
+        
+        # --- FIX: Specify the database name here ---
+        db_name = "ta_file_share" 
+        db = db_client.get_database(db_name)
+        # --- FIX END ---
+        
         filters_collection = db.get_collection("filters")
         users_collection = db.get_collection("users")
         admin_data_collection = db.get_collection("admin_data")
