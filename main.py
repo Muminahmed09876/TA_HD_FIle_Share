@@ -3,12 +3,11 @@ import asyncio
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
 from pyrogram.errors import MessageNotModified, FloodWait, UserNotParticipant
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
-from aiohttp import web
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pymongo import MongoClient
+from aiohttp import web
 
 # --- Bot Configuration ---
-# All sensitive information should be read from environment variables for security.
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -125,21 +124,6 @@ app = Client(
     api_hash=API_HASH,
     bot_token=BOT_TOKEN
 )
-
-async def set_my_commands(client):
-    commands = [
-        BotCommand("start", "Start the bot"),
-        BotCommand("broadcast", "Send a message to all users"),
-        BotCommand("delete", "<keyword> - Remove a filter and its files"),
-        BotCommand("ban", "<user_id> - Ban a user"),
-        BotCommand("unban", "<user_id> - Unban a user"),
-        BotCommand("add_channel", "Add a required join channel"),
-        BotCommand("delete_channel", "<link or id> - Delete a channel from join list"),
-        BotCommand("restrict", "Toggle message forwarding restriction"),
-        BotCommand("auto_delete", "<time> - Set auto-delete time for the active filter"),
-        BotCommand("channel_id", "Get a channel ID by forwarding a message")
-    ]
-    await client.set_bot_commands(commands)
 
 # --- Message Handlers ---
 @app.on_message(filters.command("start") & filters.private)
@@ -386,7 +370,7 @@ async def delete_cmd(client, message):
     else:
         await message.reply_text(f"❌ **Filter '{keyword}' not found.**")
 
-@app.on_message(filters.private & filters.user(ADMIN_ID) & ~filters.command("start"))
+@app.on_message(filters.private & filters.user(ADMIN_ID) & ~filters.command(["start", "broadcast", "delete", "ban", "unban", "add_channel", "delete_channel", "restrict", "auto_delete", "channel_id"]))
 async def handle_conversational_input(client, message):
     user_id = message.from_user.id
     if user_id in user_states:
@@ -588,11 +572,8 @@ async def handle_ping(request):
 async def start_web_server():
     """Starts the aiohttp web server."""
     port = int(os.getenv("PORT", 8080))
-    
-    # Corrected logic: Create an Application object first
     app_web = web.Application()
     app_web.router.add_get("/", handle_ping)
-    
     app_runner = web.AppRunner(app_web)
     await app_runner.setup()
     site = web.TCPSite(app_runner, '0.0.0.0', port)
@@ -620,14 +601,9 @@ async def main():
 
     await load_data_from_mongodb()
     
-    # Start the Pyrogram client and the web server together
     async with app:
-        await set_my_commands(app)
         asyncio.create_task(start_web_server())
-        
         print("Bot is now running and ready to handle messages.")
-        
-        # Keep the main coroutine running indefinitely
         await asyncio.Event().wait()
     
 if __name__ == "__main__":
