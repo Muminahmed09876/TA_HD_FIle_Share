@@ -174,14 +174,18 @@ app = Client(
 )
 
 # --- Global state variables ---
+# This dictionary will store the active filter for each user.
 user_states = {}
 restrict_status = False
-active_filter_keyword = None
 
 # --- Message Handlers ---
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
     user_id = message.from_user.id
+    # Resetting the user's state when they send /start
+    if user_id in user_states:
+        del user_states[user_id]
+
     if is_user_banned(user_id):
         return await message.reply_text("❌ **You are banned from using this bot.**")
 
@@ -215,7 +219,7 @@ async def start_cmd(client, message):
             buttons.append([InlineKeyboardButton("🔄 Try Again", callback_data="check_join_status")])
             keyboard = InlineKeyboardMarkup(buttons)
             return await message.reply_text(
-                "❌ **You must join the following channels to use this bot:**",
+                "❌ **You must join the following channels to use this bot.**",
                 reply_markup=keyboard,
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -248,7 +252,6 @@ async def start_cmd(client, message):
             sent_message_ids = []
             for file_id in filter_data["file_ids"]:
                 try:
-                    # Added a check to ensure file_id is a number before trying to copy
                     if isinstance(file_id, int):
                         sent_msg = await app.copy_message(
                             chat_id=message.chat.id,
@@ -288,11 +291,11 @@ async def start_cmd(client, message):
         await message.reply_text(
             "🌟 **Welcome, Admin!** 🌟\n\n"
             "This bot is your personal file-sharing hub.\n\n"
-            "**Channel Workflow:**\n"
-            "📂 **Create Filter**: Send a single-word message in the channel (e.g., `#python`).\n"
-            "💾 **Add Files**: Any media sent after that will be added to the active filter.\n"
-            "🗑️ **Delete Filter**: Delete the original single-word message to remove the filter.\n\n"
-            "**Commands:**\n"
+            "**New Filter Workflow:**\n"
+            "1. Use `/add_filter <keyword>` to create a new filter.\n"
+            "2. Send media messages to the channel, and they will be added to the active filter.\n"
+            "3. Use `/stop_filter` to deactivate the filter.\n\n"
+            "**Other Commands:**\n"
             "• `/broadcast` to send a message to all users.\n"
             "• `/delete <keyword>` to remove a filter and its files.\n"
             "• `/ban <user_id>` to ban a user.\n"
@@ -313,74 +316,65 @@ async def start_cmd(client, message):
             parse_mode=ParseMode.MARKDOWN
         )
 
-@app.on_message(filters.channel & filters.text & filters.chat(CHANNEL_ID))
-async def channel_text_handler(client, message):
-    global active_filter_keyword
-    text = message.text
-    if text and len(text.split()) == 1:
-        keyword = text.lower().replace('#', '')
-        if not keyword:
-            return
+@app.on_message(filters.command("add_filter") & filters.private & filters.user(ADMIN_ID))
+async def add_filter_cmd(client, message):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        return await message.reply_text("📌 **Please provide a keyword.**\nExample: `/add_filter python`")
 
-        active_filter_keyword = keyword
-        
-        existing_filter = get_filter(keyword)
-        if not existing_filter:
-            filters_collection.insert_one({"keyword": keyword, "file_ids": []})
-            await app.send_message(
-                ADMIN_ID,
-                f"✅ **New filter created!**\n"
-                f"🔗 Share link: `https://t.me/{(await app.get_me()).username}?start={keyword}`\n\n"
-                "Any media you send now will be added to this filter.",
-                parse_mode=ParseMode.MARKDOWN
-            )
-        else:
-            await app.send_message(
-                ADMIN_ID,
-                f"⚠️ **Filter '{keyword}' is already active.** All new files will be added to it.",
-                parse_mode=ParseMode.MARKDOWN
-            )
-
-@app.on_message(filters.channel & filters.media & filters.chat(CHANNEL_ID))
-async def channel_media_handler(client, message):
-    if active_filter_keyword:
-        # Check if the message has a file/media
-        if message.media:
-            # Storing only the message ID, which is an integer
-            add_file_to_filter(active_filter_keyword, message.id)
-        else:
-            await app.send_message(
-                ADMIN_ID,
-                "⚠️ **Only media messages can be added to a filter.**"
-            )
+    keyword = args[1].lower()
+    user_id = message.from_user.id
+    
+    # Store the active filter keyword for the admin user
+    user_states[user_id] = keyword
+    
+    existing_filter = get_filter(keyword)
+    if not existing_filter:
+        filters_collection.insert_one({"keyword": keyword, "file_ids": []})
+        await message.reply_text(
+            f"✅ **নতুন ফিল্টার '{keyword}' তৈরি হয়েছে!**\n"
+            f"এখন ফাইল পাঠানো শুরু করুন।",
+            parse_mode=ParseMode.MARKDOWN
+        )
     else:
-        await app.send_message(
-            ADMIN_ID,
-            f"⚠️ **No active filter found.** Please create a new filter with a single-word message (e.g., `#newfilter`) in the channel.",
+        await message.reply_text(
+            f"⚠️ **ফিল্টার '{keyword}' আগে থেকেই আছে।**\n"
+            f"এখন থেকে পাঠানো ফাইলগুলো এই ফিল্টারে যোগ হবে।",
             parse_mode=ParseMode.MARKDOWN
         )
 
+@app.on_message(filters.command("stop_filter") & filters.private & filters.user(ADMIN_ID))
+async def stop_filter_cmd(client, message):
+    user_id = message.from_user.id
+    if user_id in user_states:
+        del user_states[user_id]
+        await message.reply_text("✅ **সক্রিয় ফিল্টারটি বন্ধ করা হয়েছে।**")
+    else:
+        await message.reply_text("❌ **কোনো সক্রিয় ফিল্টার নেই।**")
+
+@app.on_message(filters.channel & filters.media & filters.chat(CHANNEL_ID))
+async def channel_media_handler(client, message):
+    # Check if the user who sent the media is the admin and has an active filter
+    if message.from_user and message.from_user.id == ADMIN_ID and ADMIN_ID in user_states:
+        active_filter_keyword = user_states[ADMIN_ID]
+        
+        # Check if the message has a file/media
+        if message.media:
+            add_file_to_filter(active_filter_keyword, message.id)
+            await app.send_message(
+                ADMIN_ID,
+                f"✅ **ফাইল সফলভাবে '{active_filter_keyword}' ফিল্টারে যোগ করা হয়েছে!**"
+            )
+        else:
+            await app.send_message(
+                ADMIN_ID,
+                "⚠️ **শুধুমাত্র মিডিয়া ফাইল ফিল্টারে যোগ করা যাবে।**"
+            )
 
 @app.on_deleted_messages(filters.channel & filters.chat(CHANNEL_ID))
 async def channel_delete_handler(client, messages):
-    global active_filter_keyword
-    for message in messages:
-        if message.text and len(message.text.split()) == 1:
-            keyword = message.text.lower().replace('#', '')
-            if get_filter(keyword):
-                delete_filter(keyword)
-                await app.send_message(
-                    ADMIN_ID,
-                    f"🗑️ **Filter '{keyword}' has been deleted** because the original message was removed from the channel.",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-            
-            if active_filter_keyword == keyword:
-                active_filter_keyword = None
-                await app.send_message(
-                    ADMIN_ID,
-                    "📝 **Note:** The last active filter has been cleared because the filter message was deleted."
-                )
+    # This handler can be removed or modified if you no longer want a text message to create a filter.
+    pass
 
 @app.on_message(filters.command("broadcast") & filters.private & filters.user(ADMIN_ID))
 async def broadcast_cmd(client, message):
@@ -441,7 +435,10 @@ async def broadcast_cmd(client, message):
 
 @app.on_message(filters.command("delete") & filters.private & filters.user(ADMIN_ID))
 async def delete_cmd(client, message):
-    global active_filter_keyword
+    user_id = message.from_user.id
+    if user_id in user_states:
+        del user_states[user_id]
+        
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         return await message.reply_text("📌 **Please provide a keyword to delete.**\nExample: `/delete python`")
@@ -449,9 +446,6 @@ async def delete_cmd(client, message):
     keyword = args[1].lower()
     if get_filter(keyword):
         delete_filter(keyword)
-        if active_filter_keyword == keyword:
-            active_filter_keyword = None
-
         await message.reply_text(
             f"🗑️ **Filter '{keyword}' and its associated files have been deleted.**",
             parse_mode=ParseMode.MARKDOWN
@@ -459,60 +453,61 @@ async def delete_cmd(client, message):
     else:
         await message.reply_text(f"❌ **Filter '{keyword}' not found.**")
 
-@app.on_message(filters.private & filters.user(ADMIN_ID) & filters.text & ~filters.command(["add_channel", "delete_channel", "start", "broadcast", "delete", "ban", "unban", "restrict", "auto_delete", "channel_id"]))
+@app.on_message(filters.private & filters.user(ADMIN_ID) & filters.text & ~filters.command(["add_filter", "stop_filter", "add_channel", "delete_channel", "start", "broadcast", "delete", "ban", "unban", "restrict", "auto_delete", "channel_id"]))
 async def handle_conversational_input(client, message):
     user_id = message.from_user.id
     if user_id in user_states:
         state = user_states[user_id]
         
-        if state["command"] == "channel_id_awaiting_message":
-            if message.forward_from_chat:
-                chat_id = message.forward_from_chat.id
-                chat_type = message.forward_from_chat.type
-                chat_title = message.forward_from_chat.title if message.forward_from_chat.title else "N/A"
-                
-                response = (
-                    f"✅ **সফলভাবে চ্যানেল আইডি পাওয়া গেছে!**\n\n"
-                    f"🆔 **Chat ID:** `{chat_id}`\n"
-                    f"📝 **Chat Type:** `{chat_type}`\n"
-                    f"🔖 **Chat Title:** `{chat_title}`"
-                )
-                await message.reply_text(response, parse_mode=ParseMode.MARKDOWN)
-            else:
-                await message.reply_text(
-                    "❌ **ভুল মেসেজ!**\n\n"
-                    "অনুগ্রহ করে একটি চ্যানেল থেকে **সরাসরি ফরওয়ার্ড করা** মেসেজ পাঠান।"
-                )
-            del user_states[user_id]
-            return
-
-        if state["command"] == "add_channel":
-            if state["step"] == "awaiting_name":
-                user_states[user_id]["channel_name"] = message.text
-                user_states[user_id]["step"] = "awaiting_link"
-                await message.reply_text("🔗 **এবার চ্যানেলের লিংক দিন।** (যেমন: `https://t.me/channel` অথবা `t.me/channel`)")
-            elif state["step"] == "awaiting_link":
-                channel_link = message.text
-                if not (channel_link.startswith('https://t.me/') or channel_link.startswith('t.me/')):
-                    del user_states[user_id]
-                    await message.reply_text("❌ **ভুল লিংক ফরম্যাট।** `/add_channel` দিয়ে আবার চেষ্টা করুন।")
-                    return
-                user_states[user_id]["channel_link"] = channel_link
-                user_states[user_id]["step"] = "awaiting_id"
-                await message.reply_text("🆔 **এবার চ্যানেলের আইডি দিন।** (যেমন: `-100123456789`)")
-            elif state["step"] == "awaiting_id":
-                try:
-                    channel_id = int(message.text)
-                    channel_name = user_states[user_id]["channel_name"]
-                    channel_link = user_states[user_id]["channel_link"]
+        if isinstance(state, dict):
+            if state["command"] == "channel_id_awaiting_message":
+                if message.forward_from_chat:
+                    chat_id = message.forward_from_chat.id
+                    chat_type = message.forward_from_chat.type
+                    chat_title = message.forward_from_chat.title if message.forward_from_chat.title else "N/A"
                     
-                    add_join_channel(channel_name, channel_link, channel_id)
-                    del user_states[user_id]
-                    await message.reply_text(f"✅ **চ্যানেল '{channel_name}' সফলভাবে যুক্ত হয়েছে!**")
-                except ValueError:
-                    del user_states[user_id]
-                    await message.reply_text("❌ **ভুল আইডি ফরম্যাট।** অনুগ্রহ করে একটি সংখ্যা দিন। `/add_channel` দিয়ে আবার চেষ্টা করুন।")
+                    response = (
+                        f"✅ **সফলভাবে চ্যানেল আইডি পাওয়া গেছে!**\n\n"
+                        f"🆔 **Chat ID:** `{chat_id}`\n"
+                        f"📝 **Chat Type:** `{chat_type}`\n"
+                        f"🔖 **Chat Title:** `{chat_title}`"
+                    )
+                    await message.reply_text(response, parse_mode=ParseMode.MARKDOWN)
+                else:
+                    await message.reply_text(
+                        "❌ **ভুল মেসেজ!**\n\n"
+                        "অনুগ্রহ করে একটি চ্যানেল থেকে **সরাসরি ফরওয়ার্ড করা** মেসেজ পাঠান।"
+                    )
+                del user_states[user_id]
+                return
 
+            if state["command"] == "add_channel":
+                if state["step"] == "awaiting_name":
+                    user_states[user_id]["channel_name"] = message.text
+                    user_states[user_id]["step"] = "awaiting_link"
+                    await message.reply_text("🔗 **এবার চ্যানেলের লিংক দিন।** (যেমন: `https://t.me/channel` অথবা `t.me/channel`)")
+                elif state["step"] == "awaiting_link":
+                    channel_link = message.text
+                    if not (channel_link.startswith('https://t.me/') or channel_link.startswith('t.me/')):
+                        del user_states[user_id]
+                        await message.reply_text("❌ **ভুল লিংক ফরম্যাট।** `/add_channel` দিয়ে আবার চেষ্টা করুন।")
+                        return
+                    user_states[user_id]["channel_link"] = channel_link
+                    user_states[user_id]["step"] = "awaiting_id"
+                    await message.reply_text("🆔 **এবার চ্যানেলের আইডি দিন।** (যেমন: `-100123456789`)")
+                elif state["step"] == "awaiting_id":
+                    try:
+                        channel_id = int(message.text)
+                        channel_name = user_states[user_id]["channel_name"]
+                        channel_link = user_states[user_id]["channel_link"]
+                        
+                        add_join_channel(channel_name, channel_link, channel_id)
+                        del user_states[user_id]
+                        await message.reply_text(f"✅ **চ্যানেল '{channel_name}' সফলভাবে যুক্ত হয়েছে!**")
+                    except ValueError:
+                        del user_states[user_id]
+                        await message.reply_text("❌ **ভুল আইডি ফরম্যাট।** অনুগ্রহ করে একটি সংখ্যা দিন। `/add_channel` দিয়ে আবার চেষ্টা করুন।")
+                        
 @app.on_message(filters.command("add_channel") & filters.private & filters.user(ADMIN_ID))
 async def add_channel_cmd(client, message):
     user_id = message.from_user.id
@@ -577,6 +572,9 @@ async def unban_cmd(client, message):
 @app.on_message(filters.command("auto_delete") & filters.private & filters.user(ADMIN_ID))
 async def auto_delete_cmd(client, message):
     args = message.text.split(maxsplit=2)
+    user_id = message.from_user.id
+    if user_id in user_states:
+        del user_states[user_id]
 
     if len(args) < 3:
         return await message.reply_text("📌 **ব্যবহার:** `/auto_delete <keyword> <time>`\n\n**সময়ের বিকল্প:**\n- `30m` (30 মিনিট)\n- `1h` (1 ঘন্টা)\n- `12h` (12 ঘন্টা)\n- `24h` (24 ঘন্টা)\n- `off` অটো-ডিলিট বন্ধ করতে।")
