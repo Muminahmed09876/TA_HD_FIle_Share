@@ -248,23 +248,28 @@ async def start_cmd(client, message):
             sent_message_ids = []
             for file_id in filter_data["file_ids"]:
                 try:
-                    sent_msg = await app.copy_message(
-                        chat_id=message.chat.id,
-                        from_chat_id=int(CHANNEL_ID),
-                        message_id=file_id,
-                        protect_content=restrict_status
-                    )
-                    sent_message_ids.append(sent_msg.id)
-                    await asyncio.sleep(0.5)
+                    # Added a check to ensure file_id is a number before trying to copy
+                    if isinstance(file_id, int):
+                        sent_msg = await app.copy_message(
+                            chat_id=message.chat.id,
+                            from_chat_id=int(CHANNEL_ID),
+                            message_id=file_id,
+                            protect_content=restrict_status
+                        )
+                        sent_message_ids.append(sent_msg.id)
+                        await asyncio.sleep(0.5)
+                    else:
+                        print(f"Invalid file_id found: {file_id}")
                 except FloodWait as e:
                     await asyncio.sleep(e.value)
-                    sent_msg = await app.copy_message(
-                        chat_id=message.chat.id,
-                        from_chat_id=int(CHANNEL_ID),
-                        message_id=file_id,
-                        protect_content=restrict_status
-                    )
-                    sent_message_ids.append(sent_msg.id)
+                    if isinstance(file_id, int):
+                        sent_msg = await app.copy_message(
+                            chat_id=message.chat.id,
+                            from_chat_id=int(CHANNEL_ID),
+                            message_id=file_id,
+                            protect_content=restrict_status
+                        )
+                        sent_message_ids.append(sent_msg.id)
                 except Exception as e:
                     print(f"Error copying message {file_id}: {e}")
                     pass
@@ -339,13 +344,22 @@ async def channel_text_handler(client, message):
 @app.on_message(filters.channel & filters.media & filters.chat(CHANNEL_ID))
 async def channel_media_handler(client, message):
     if active_filter_keyword:
-        add_file_to_filter(active_filter_keyword, message.id)
+        # Check if the message has a file/media
+        if message.media:
+            # Storing only the message ID, which is an integer
+            add_file_to_filter(active_filter_keyword, message.id)
+        else:
+            await app.send_message(
+                ADMIN_ID,
+                "⚠️ **Only media messages can be added to a filter.**"
+            )
     else:
         await app.send_message(
             ADMIN_ID,
             f"⚠️ **No active filter found.** Please create a new filter with a single-word message (e.g., `#newfilter`) in the channel.",
             parse_mode=ParseMode.MARKDOWN
         )
+
 
 @app.on_deleted_messages(filters.channel & filters.chat(CHANNEL_ID))
 async def channel_delete_handler(client, messages):
