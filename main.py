@@ -597,7 +597,6 @@ async def start_web_server():
 
 # --- Bot start up ---
 async def main():
-    """Main function to run the bot and web server."""
     global db_client, db, filters_collection, users_collection, admin_data_collection
     
     print("Starting TA File Share Bot...")
@@ -616,13 +615,17 @@ async def main():
         return
 
     await load_data_from_mongodb()
-    await set_my_commands(app)
     
-    # Start the web server in a background task
-    asyncio.create_task(start_web_server())
-
-    # This is the correct way to start the Pyrogram bot
-    await app.run()
-
+    # --- Fix: Ensure client is started before setting commands ---
+    async with app:
+        # Client has now been started, so setting commands will work.
+        await set_my_commands(app)
+        
+        # Start the web server in a background task
+        asyncio.create_task(start_web_server())
+        
+        # Keep the bot running indefinitely
+        await asyncio.Event().wait()
+    
 if __name__ == "__main__":
-    app.run(main())
+    asyncio.run(main())
