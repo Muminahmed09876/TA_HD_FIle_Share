@@ -7,6 +7,7 @@ from pyrogram.enums import ParseMode
 from pyrogram.errors import MessageNotModified, FloodWait, UserNotParticipant
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from aiohttp import web
+from pymongo import MongoClient
 
 # --- Bot Configuration ---
 # All sensitive information should be read from environment variables for security.
@@ -14,13 +15,20 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
+MONGODB_URI = os.getenv("MONGODB_URI")
 
 # The bot MUST be an admin in this channel.
 CHANNEL_ID = -1002619816346
 LOG_CHANNEL_ID = -1002623880704
 
-DATABASE_FILE = "bot_data.json"
 LAST_FILTER_FILE = "last_filter.txt"
+
+# --- MongoDB Data Structures ---
+db_client = None
+db = None
+filters_collection = None
+users_collection = None
+admin_data_collection = None
 
 # --- In-memory data structures ---
 filters_dict = {}  # {keyword: [file_ids]}
@@ -34,37 +42,62 @@ deep_link_keyword = None
 user_states = {} # For conversational commands like add_channel
 
 # --- Helper Functions ---
-def save_data():
-    """Saves filters and user list to a JSON file."""
-    data = {
-        "filters_dict": filters_dict,
-        "user_list": list(user_list),
-        "banned_users": list(banned_users),
-        "join_channels": join_channels,
-        "restrict_status": restrict_status,
-        "autodelete_filters": autodelete_filters,
-        "user_states": user_states
-    }
-    with open(DATABASE_FILE, "w") as f:
-        json.dump(data, f, indent=4)
-    print("Data saved successfully.")
+def save_admin_data():
+    """Saves admin-specific data to MongoDB."""
+    if admin_data_collection:
+        data = {
+            "join_channels": join_channels,
+            "restrict_status": restrict_status,
+            "autodelete_filters": autodelete_filters,
+            "user_states": user_states
+        }
+        admin_data_collection.update_one({"_id": "admin_settings"}, {"$set": data}, upsert=True)
+        print("Admin data saved successfully to MongoDB.")
 
-def load_data():
-    """Loads filters and user list from a JSON file."""
+def save_user_data(user_id, is_banned=False):
+    """Saves or updates a user's status in MongoDB."""
+    if users_collection:
+        users_collection.update_one({"_id": user_id}, {"$set": {"banned": is_banned}}, upsert=True)
+        print(f"User {user_id} data saved successfully to MongoDB.")
+
+def save_filter_data(keyword, file_ids):
+    """Saves or updates a filter's files in MongoDB."""
+    if filters_collection:
+        filters_collection.update_one({"_id": keyword}, {"$set": {"files": file_ids}}, upsert=True)
+        print(f"Filter '{keyword}' saved successfully to MongoDB.")
+
+async def load_data_from_mongodb():
+    """Loads all data from MongoDB into in-memory structures."""
     global filters_dict, user_list, banned_users, join_channels, restrict_status, autodelete_filters, user_states
-    if os.path.exists(DATABASE_FILE):
-        with open(DATABASE_FILE, "r") as f:
-            data = json.load(f)
-            filters_dict = data.get("filters_dict", {})
-            user_list = set(data.get("user_list", []))
-            banned_users = set(data.get("banned_users", []))
-            join_channels = data.get("join_channels", [])
-            restrict_status = data.get("restrict_status", False)
-            autodelete_filters = data.get("autodelete_filters", {})
-            user_states = data.get("user_states", {})
-            print("Data loaded successfully.")
-    else:
-        print("No database file found. Starting with empty data.")
+    
+    if not db_client:
+        print("MongoDB connection not established. Cannot load data.")
+        return
+
+    print("Loading data from MongoDB...")
+
+    # Load filters
+    filters_cursor = filters_collection.find({})
+    for doc in filters_cursor:
+        filters_dict[doc["_id"]] = doc.get("files", [])
+    
+    # Load users
+    users_cursor = users_collection.find({})
+    for doc in users_cursor:
+        user_id = doc["_id"]
+        user_list.add(user_id)
+        if doc.get("banned", False):
+            banned_users.add(user_id)
+
+    # Load admin data
+    admin_data_doc = admin_data_collection.find_one({"_id": "admin_settings"})
+    if admin_data_doc:
+        join_channels = admin_data_doc.get("join_channels", [])
+        restrict_status = admin_data_doc.get("restrict_status", False)
+        autodelete_filters = admin_data_doc.get("autodelete_filters", {})
+        user_states = admin_data_doc.get("user_states", {})
+
+    print("Data loaded from MongoDB successfully.")
 
 def save_last_filter(keyword):
     """Saves the last active filter keyword to a file."""
@@ -153,8 +186,9 @@ async def start_cmd(client, message):
     if user_id in banned_users:
         return await message.reply_text("❌ **You are banned from using this bot.**")
 
-    user_list.add(user_id)
-    save_data()
+    if user_id not in user_list:
+        user_list.add(user_id)
+        save_user_data(user_id)
     
     # Log user information to the log channel
     user = message.from_user
@@ -307,7 +341,7 @@ async def channel_text_handler(client, message):
         
         if keyword not in filters_dict:
             filters_dict[keyword] = []
-            save_data()
+            save_filter_data(keyword, [])
             await app.send_message(
                 ADMIN_ID,
                 f"✅ **New filter created!**\n"
@@ -333,7 +367,7 @@ async def channel_media_handler(client, message):
             filters_dict[keyword] = []
 
         filters_dict[keyword].append(message.id)
-        save_data()
+        save_filter_data(keyword, filters_dict[keyword])
         
     else:
         await app.send_message(
@@ -351,9 +385,12 @@ async def channel_delete_handler(client, messages):
             keyword = message.text.lower().replace('#', '')
             if keyword in filters_dict:
                 del filters_dict[keyword]
+                if filters_collection:
+                    filters_collection.delete_one({"_id": keyword})
                 if keyword in autodelete_filters:
                     del autodelete_filters[keyword]
-                save_data()
+                    save_admin_data()
+
                 await app.send_message(
                     ADMIN_ID,
                     f"🗑️ **Filter '{keyword}' has been deleted** because the original message was removed from the channel.",
@@ -438,9 +475,12 @@ async def delete_cmd(client, message):
     keyword = args[1].lower()
     if keyword in filters_dict:
         del filters_dict[keyword]
+        if filters_collection:
+            filters_collection.delete_one({"_id": keyword})
         if keyword in autodelete_filters:
             del autodelete_filters[keyword]
-        save_data()
+            save_admin_data()
+
         if last_filter == keyword:
             last_filter = None
             with open(LAST_FILTER_FILE, "w") as f:
@@ -482,7 +522,7 @@ async def handle_conversational_input(client, message):
                     "অনুগ্রহ করে একটি চ্যানেল থেকে **সরাসরি ফরওয়ার্ড করা** মেসেজ পাঠান।"
                 )
             del user_states[user_id]
-            save_data()
+            save_admin_data()
             return
 
         # New conversational state for add_channel (3 steps)
@@ -491,18 +531,18 @@ async def handle_conversational_input(client, message):
                 user_states[user_id]["channel_name"] = message.text
                 user_states[user_id]["step"] = "awaiting_link"
                 await message.reply_text("🔗 **এবার চ্যানেলের লিংক দিন।** (যেমন: `https://t.me/channel` অথবা `t.me/channel`)")
-                save_data()
+                save_admin_data()
             elif state["step"] == "awaiting_link":
                 channel_link = message.text
                 if not (channel_link.startswith('https://t.me/') or channel_link.startswith('t.me/')):
                     del user_states[user_id]
-                    save_data()
+                    save_admin_data()
                     await message.reply_text("❌ **ভুল লিংক ফরম্যাট।** `/add_channel` দিয়ে আবার চেষ্টা করুন।")
                     return
                 user_states[user_id]["channel_link"] = channel_link
                 user_states[user_id]["step"] = "awaiting_id"
                 await message.reply_text("🆔 **এবার চ্যানেলের আইডি দিন।** (যেমন: `-100123456789`)")
-                save_data()
+                save_admin_data()
             elif state["step"] == "awaiting_id":
                 try:
                     channel_id = int(message.text)
@@ -510,13 +550,12 @@ async def handle_conversational_input(client, message):
                     channel_link = user_states[user_id]["channel_link"]
                     
                     join_channels.append({'name': channel_name, 'link': channel_link, 'id': channel_id})
-                    save_data()
                     del user_states[user_id]
-                    save_data()
+                    save_admin_data()
                     await message.reply_text(f"✅ **চ্যানেল '{channel_name}' সফলভাবে যুক্ত হয়েছে!**")
                 except ValueError:
                     del user_states[user_id]
-                    save_data()
+                    save_admin_data()
                     await message.reply_text("❌ **ভুল আইডি ফরম্যাট।** অনুগ্রহ করে একটি সংখ্যা দিন। `/add_channel` দিয়ে আবার চেষ্টা করুন।")
 
 ## Add channel conversational command
@@ -524,7 +563,7 @@ async def handle_conversational_input(client, message):
 async def add_channel_cmd(client, message):
     user_id = message.from_user.id
     user_states[user_id] = {"command": "add_channel", "step": "awaiting_name"}
-    save_data()
+    save_admin_data()
     await message.reply_text("📝 **চ্যানেলটির নাম লিখুন।**")
 
 ## Delete channel command
@@ -548,7 +587,7 @@ async def delete_channel_cmd(client, message):
     
     if found:
         join_channels = new_join_channels
-        save_data()
+        save_admin_data()
         await message.reply_text(f"🗑️ **চ্যানেলটি সফলভাবে মুছে ফেলা হয়েছে।**")
     else:
         await message.reply_text(f"❌ **এই আইডি বা লিংকের কোনো চ্যানেল খুঁজে পাওয়া যায়নি।**")
@@ -558,7 +597,7 @@ async def delete_channel_cmd(client, message):
 async def restrict_cmd(client, message):
     global restrict_status
     restrict_status = not restrict_status
-    save_data()
+    save_admin_data()
     status_text = "ON" if restrict_status else "OFF"
     await message.reply_text(f"🔒 **Message forwarding restriction is now {status_text}.**")
     
@@ -578,7 +617,7 @@ async def ban_cmd(client, message):
             return await message.reply_text("⚠️ **This user is already banned.**")
         
         banned_users.add(user_id_to_ban)
-        save_data()
+        save_user_data(user_id_to_ban, is_banned=True)
         await message.reply_text(f"✅ **User `{user_id_to_ban}` has been banned.**")
     except ValueError:
         await message.reply_text("❌ **Invalid User ID.** Please provide a numeric user ID.")
@@ -596,7 +635,7 @@ async def unban_cmd(client, message):
             return await message.reply_text("⚠️ **This user is not banned.**")
         
         banned_users.remove(user_id_to_unban)
-        save_data()
+        save_user_data(user_id_to_unban, is_banned=False)
         await message.reply_text(f"✅ **User `{user_id_to_unban}` has been unbanned.**")
     except ValueError:
         await message.reply_text("❌ **Invalid User ID.** Please provide a numeric user ID.")
@@ -631,13 +670,13 @@ async def auto_delete_cmd(client, message):
     if autodelete_time == 0:
         if last_filter in autodelete_filters:
             del autodelete_filters[last_filter]
-            save_data()
+            save_admin_data()
             await message.reply_text(f"🗑️ **সক্রিয় ফিল্টারের জন্য অটো-ডিলিট বন্ধ করা হয়েছে।**")
         else:
             await message.reply_text(f"⚠️ **সক্রিয় ফিল্টারের জন্য অটো-ডিলিট আগেই বন্ধ ছিল।**")
     else:
         autodelete_filters[last_filter] = autodelete_time
-        save_data()
+        save_admin_data()
         await message.reply_text(f"✅ **সক্রিয় ফিল্টারের জন্য অটো-ডিলিট {time_str} তে সেট করা হয়েছে।**")
 
 @app.on_callback_query(filters.regex("check_join_status"))
@@ -663,7 +702,7 @@ async def check_join_status_callback(client, callback_query):
 async def channel_id_cmd(client, message):
     user_id = message.from_user.id
     user_states[user_id] = {"command": "channel_id_awaiting_message"}
-    save_data()
+    save_admin_data()
     await message.reply_text(
         "➡️ **অনুগ্রহ করে একটি চ্যানেল থেকে একটি মেসেজ এখানে ফরওয়ার্ড করুন।**\n\n"
         "আমি সেই মেসেজ থেকে চ্যানেলের আইডি বের করে দেব।"
@@ -687,9 +726,25 @@ async def start_web_server():
 # --- Bot start up ---
 async def main():
     """Main function to run the bot and web server."""
-    load_data()
-    load_last_filter()
+    global db_client, db, filters_collection, users_collection, admin_data_collection
+    
     print("Starting TA File Share Bot...")
+
+    # Connect to MongoDB
+    try:
+        db_client = MongoClient(MONGODB_URI)
+        db = db_client.get_database()
+        filters_collection = db.get_collection("filters")
+        users_collection = db.get_collection("users")
+        admin_data_collection = db.get_collection("admin_data")
+        print("Connected to MongoDB successfully.")
+    except Exception as e:
+        print(f"Failed to connect to MongoDB: {e}")
+        return
+
+    # Load initial data
+    await load_data_from_mongodb()
+    load_last_filter()
     
     # Start the web server and the bot client concurrently
     async with app:
