@@ -1,5 +1,6 @@
 import os
 import asyncio
+import logging
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
 from pyrogram.errors import MessageNotModified, FloodWait, UserNotParticipant
@@ -7,14 +8,25 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pymongo import MongoClient
 from aiohttp import web
 
+# --- Set up logging ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 # --- Bot Configuration ---
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
-MONGODB_URI = os.getenv("MONGODB_URI")
-CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID"))
+try:
+    API_ID = int(os.getenv("API_ID"))
+    API_HASH = os.getenv("API_HASH")
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    ADMIN_ID = int(os.getenv("ADMIN_ID"))
+    MONGODB_URI = os.getenv("MONGODB_URI")
+    CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
+    LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID"))
+except (ValueError, TypeError) as e:
+    logger.error(f"Environment variables are missing or invalid: {e}")
+    exit(1)
 
 # --- MongoDB Data Structures ---
 db_client = None
@@ -46,29 +58,29 @@ def save_admin_data():
             "user_states": user_states
         }
         admin_data_collection.update_one({"_id": "admin_settings"}, {"$set": data}, upsert=True)
-        print("Admin data saved successfully to MongoDB.")
+        logger.info("Admin data saved successfully to MongoDB.")
 
 def save_user_data(user_id, is_banned=False):
     """Saves or updates a user's status in MongoDB."""
     if users_collection:
         users_collection.update_one({"_id": user_id}, {"$set": {"banned": is_banned}}, upsert=True)
-        print(f"User {user_id} data saved successfully to MongoDB.")
+        logger.info(f"User {user_id} data saved successfully to MongoDB.")
 
 def save_filter_data(keyword, file_ids):
     """Saves or updates a filter's files in MongoDB."""
     if filters_collection:
         filters_collection.update_one({"_id": keyword}, {"$set": {"files": file_ids}}, upsert=True)
-        print(f"Filter '{keyword}' saved successfully to MongoDB.")
+        logger.info(f"Filter '{keyword}' saved successfully to MongoDB.")
 
 async def load_data_from_mongodb():
     """Loads all data from MongoDB into in-memory structures."""
     global filters_dict, user_list, banned_users, join_channels, restrict_status, autodelete_filters, user_states, last_filter
     
     if not db_client:
-        print("MongoDB connection not established. Cannot load data.")
+        logger.error("MongoDB connection not established. Cannot load data.")
         return
 
-    print("Loading data from MongoDB...")
+    logger.info("Loading data from MongoDB...")
 
     filters_cursor = filters_collection.find({})
     for doc in filters_cursor:
@@ -89,7 +101,7 @@ async def load_data_from_mongodb():
         autodelete_filters = admin_data_doc.get("autodelete_filters", {})
         user_states = admin_data_doc.get("user_states", {})
 
-    print("Data loaded from MongoDB successfully.")
+    logger.info("Data loaded from MongoDB successfully.")
 
 async def is_user_member(client, user_id):
     """Checks if a user is a member of all required channels."""
@@ -104,7 +116,7 @@ async def is_user_member(client, user_id):
         except UserNotParticipant:
             return False
         except Exception as e:
-            print(f"Error checking user {user_id} in channel {channel['link']}: {e}")
+            logger.error(f"Error checking user {user_id} in channel {channel['link']}: {e}")
             return False
     return True
 
@@ -113,9 +125,9 @@ async def delete_messages_later(chat_id, message_ids, delay_seconds):
     await asyncio.sleep(delay_seconds)
     try:
         await app.delete_messages(chat_id, message_ids)
-        print(f"Successfully deleted {len(message_ids)} messages from chat {chat_id} after {delay_seconds} seconds.")
+        logger.info(f"Successfully deleted {len(message_ids)} messages from chat {chat_id} after {delay_seconds} seconds.")
     except Exception as e:
-        print(f"Failed to delete messages from chat {chat_id}: {e}")
+        logger.error(f"Failed to delete messages from chat {chat_id}: {e}")
 
 # --- Pyrogram Client ---
 app = Client(
@@ -130,6 +142,7 @@ app = Client(
 async def start_cmd(client, message):
     global deep_link_keyword
     user_id = message.from_user.id
+    logger.info(f"User {user_id} sent /start command.")
 
     if user_id in banned_users:
         return await message.reply_text("❌ **You are banned from using this bot.**")
@@ -151,7 +164,7 @@ async def start_cmd(client, message):
     try:
         await client.send_message(LOG_CHANNEL_ID, log_message, parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
-        print(f"Failed to send log message to channel: {e}")
+        logger.error(f"Failed to send log message to channel: {e}")
     
     args = message.text.split(maxsplit=1)
     if len(args) > 1:
@@ -180,7 +193,7 @@ async def start_cmd(client, message):
         try:
             await client.send_message(LOG_CHANNEL_ID, log_link_message, parse_mode=ParseMode.MARKDOWN)
         except Exception as e:
-            print(f"Failed to log deep link activity: {e}")
+            logger.error(f"Failed to log deep link activity: {e}")
         
         if keyword in filters_dict and filters_dict[keyword]:
             delete_time = autodelete_filters.get(keyword, 0)
@@ -195,15 +208,15 @@ async def start_cmd(client, message):
             sent_message_ids = []
             for file_id in filters_dict[keyword]:
                 try:
-                    sent_msg = await app.copy_message(chat_id=message.chat.id, from_chat_id=int(CHANNEL_ID), message_id=file_id, protect_content=restrict_status)
+                    sent_msg = await app.copy_message(chat_id=message.chat.id, from_chat_id=CHANNEL_ID, message_id=file_id, protect_content=restrict_status)
                     sent_message_ids.append(sent_msg.id)
                     await asyncio.sleep(0.5)
                 except FloodWait as e:
                     await asyncio.sleep(e.value)
-                    sent_msg = await app.copy_message(chat_id=message.chat.id, from_chat_id=int(CHANNEL_ID), message_id=file_id, protect_content=restrict_status)
+                    sent_msg = await app.copy_message(chat_id=message.chat.id, from_chat_id=CHANNEL_ID, message_id=file_id, protect_content=restrict_status)
                     sent_message_ids.append(sent_msg.id)
                 except Exception as e:
-                    print(f"Error copying message {file_id}: {e}")
+                    logger.error(f"Error copying message {file_id}: {e}")
                     pass
             
             await message.reply_text("🎉 **সকল ফাইল পাঠানো সম্পন্ন হয়েছে!** আশা করি আপনি যা খুঁজছিলেন তা পেয়েছেন।")
@@ -229,6 +242,7 @@ async def start_cmd(client, message):
 @app.on_message(filters.channel & filters.text & filters.chat(CHANNEL_ID))
 async def channel_text_handler(client, message):
     global last_filter
+    logger.info(f"Received text message in channel {CHANNEL_ID}: {message.text}")
     text = message.text
     if text and len(text.split()) == 1:
         keyword = text.lower().replace('#', '')
@@ -255,6 +269,7 @@ async def channel_text_handler(client, message):
 
 @app.on_message(filters.channel & filters.media & filters.chat(CHANNEL_ID))
 async def channel_media_handler(client, message):
+    logger.info(f"Received media message in channel {CHANNEL_ID}.")
     if last_filter:
         keyword = last_filter
         if keyword not in filters_dict:
@@ -300,6 +315,7 @@ async def channel_delete_handler(client, messages):
 
 @app.on_message(filters.command("broadcast") & filters.private & filters.user(ADMIN_ID))
 async def broadcast_cmd(client, message):
+    logger.info(f"Admin {ADMIN_ID} initiated broadcast.")
     if not message.reply_to_message:
         return await message.reply_text("📌 **Reply to a message** with `/broadcast` to send it to all users.")
     
@@ -323,7 +339,7 @@ async def broadcast_cmd(client, message):
             await message.reply_to_message.copy(user_id, protect_content=True)
             sent_count += 1
         except Exception as e:
-            print(f"Failed to send broadcast to user {user_id}: {e}")
+            logger.error(f"Failed to send broadcast to user {user_id}: {e}")
             failed_count += 1
         
         if (sent_count + failed_count) % 10 == 0 and sent_count + failed_count > 0:
@@ -334,7 +350,7 @@ async def broadcast_cmd(client, message):
             except MessageNotModified:
                 pass
             except Exception as e:
-                print(f"Error updating progress message: {e}")
+                logger.error(f"Error updating progress message: {e}")
         
         await asyncio.sleep(0.1)
     
@@ -350,6 +366,7 @@ async def broadcast_cmd(client, message):
 @app.on_message(filters.command("delete") & filters.private & filters.user(ADMIN_ID))
 async def delete_cmd(client, message):
     global last_filter
+    logger.info(f"Admin {ADMIN_ID} used /delete command.")
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         return await message.reply_text("📌 **Please provide a keyword to delete.**\nExample: `/delete python`")
@@ -373,6 +390,8 @@ async def delete_cmd(client, message):
 @app.on_message(filters.private & filters.user(ADMIN_ID) & ~filters.command(["start", "broadcast", "delete", "ban", "unban", "add_channel", "delete_channel", "restrict", "auto_delete", "channel_id"]))
 async def handle_conversational_input(client, message):
     user_id = message.from_user.id
+    logger.info(f"Admin {user_id} sent a conversational message. State: {user_states.get(user_id)}")
+    
     if user_id in user_states:
         state = user_states[user_id]
         
@@ -427,6 +446,7 @@ async def handle_conversational_input(client, message):
 @app.on_message(filters.command("add_channel") & filters.private & filters.user(ADMIN_ID))
 async def add_channel_cmd(client, message):
     user_id = message.from_user.id
+    logger.info(f"Admin {user_id} used /add_channel command.")
     user_states[user_id] = {"command": "add_channel", "step": "awaiting_name"}
     save_admin_data()
     await message.reply_text("📝 **চ্যানেলটির নাম লিখুন।**")
@@ -434,6 +454,7 @@ async def add_channel_cmd(client, message):
 @app.on_message(filters.command("delete_channel") & filters.private & filters.user(ADMIN_ID))
 async def delete_channel_cmd(client, message):
     global join_channels
+    logger.info(f"Admin {ADMIN_ID} used /delete_channel command.")
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         return await message.reply_text("📌 **ব্যবহার:** `/delete_channel <link or id>`\nউদাহরণ: `/delete_channel https://t.me/MyChannel`\nঅথবা `/delete_channel -100123456789`")
@@ -459,6 +480,7 @@ async def delete_channel_cmd(client, message):
 @app.on_message(filters.command("restrict") & filters.private & filters.user(ADMIN_ID))
 async def restrict_cmd(client, message):
     global restrict_status
+    logger.info(f"Admin {ADMIN_ID} used /restrict command.")
     restrict_status = not restrict_status
     save_admin_data()
     status_text = "ON" if restrict_status else "OFF"
@@ -466,6 +488,7 @@ async def restrict_cmd(client, message):
     
 @app.on_message(filters.command("ban") & filters.private & filters.user(ADMIN_ID))
 async def ban_cmd(client, message):
+    logger.info(f"Admin {ADMIN_ID} used /ban command.")
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         return await message.reply_text("📌 **Usage:** `/ban <user_id>`")
@@ -486,6 +509,7 @@ async def ban_cmd(client, message):
 
 @app.on_message(filters.command("unban") & filters.private & filters.user(ADMIN_ID))
 async def unban_cmd(client, message):
+    logger.info(f"Admin {ADMIN_ID} used /unban command.")
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         return await message.reply_text("📌 **Usage:** `/unban <user_id>`")
@@ -504,6 +528,7 @@ async def unban_cmd(client, message):
 @app.on_message(filters.command("auto_delete") & filters.private & filters.user(ADMIN_ID))
 async def auto_delete_cmd(client, message):
     global last_filter
+    logger.info(f"Admin {ADMIN_ID} used /auto_delete command.")
     args = message.text.split(maxsplit=1)
 
     if not last_filter:
@@ -542,6 +567,7 @@ async def auto_delete_cmd(client, message):
 @app.on_callback_query(filters.regex("check_join_status"))
 async def check_join_status_callback(client, callback_query):
     user_id = callback_query.from_user.id
+    logger.info(f"User {user_id} clicked 'Try Again' button.")
     if await is_user_member(client, user_id):
         await callback_query.message.edit_text("✅ **You have successfully joined the channels!** Please send the link again to get your files.", reply_markup=None)
     else:
@@ -560,6 +586,7 @@ async def check_join_status_callback(client, callback_query):
 @app.on_message(filters.command("channel_id") & filters.private & filters.user(ADMIN_ID))
 async def channel_id_cmd(client, message):
     user_id = message.from_user.id
+    logger.info(f"Admin {user_id} used /channel_id command.")
     user_states[user_id] = {"command": "channel_id_awaiting_message"}
     save_admin_data()
     await message.reply_text("➡️ **অনুগ্রহ করে একটি চ্যানেল থেকে একটি মেসেজ এখানে ফরওয়ার্ড করুন।**\n\nআমি সেই মেসেজ থেকে চ্যানেলের আইডি বের করে দেব।")
@@ -577,14 +604,14 @@ async def start_web_server():
     app_runner = web.AppRunner(app_web)
     await app_runner.setup()
     site = web.TCPSite(app_runner, '0.0.0.0', port)
-    print(f"Web server started on port {port}")
+    logger.info(f"Web server started on port {port}")
     await site.start()
 
 # --- Bot start up ---
 async def main():
     global db_client, db, filters_collection, users_collection, admin_data_collection
     
-    print("Starting TA File Share Bot...")
+    logger.info("Starting TA File Share Bot...")
 
     try:
         db_client = MongoClient(MONGODB_URI)
@@ -594,17 +621,17 @@ async def main():
         filters_collection = db.get_collection("filters")
         users_collection = db.get_collection("users")
         admin_data_collection = db.get_collection("admin_data")
-        print("Connected to MongoDB successfully.")
+        logger.info("Connected to MongoDB successfully.")
     except Exception as e:
-        print(f"Failed to connect to MongoDB: {e}")
-        return
+        logger.error(f"Failed to connect to MongoDB: {e}")
+        exit(1)
 
     await load_data_from_mongodb()
     
-    async with app:
-        asyncio.create_task(start_web_server())
-        print("Bot is now running and ready to handle messages.")
-        await asyncio.Event().wait()
-    
+    await asyncio.gather(
+        app.start(),
+        start_web_server()
+    )
+
 if __name__ == "__main__":
     asyncio.run(main())
