@@ -580,7 +580,7 @@ async def channel_id_cmd(client, message):
     save_admin_data()
     await message.reply_text("➡️ **অনুগ্রহ করে একটি চ্যানেল থেকে একটি মেসেজ এখানে ফরওয়ার্ড করুন।**\n\nআমি সেই মেসেজ থেকে চ্যানেলের আইডি বের করে দেব।")
 
-# --- Web Server for Pinging ---
+# --- Web Server for Pinging (Keep-Alive) ---
 async def handle_ping(request):
     """Simple handler for pinging service."""
     return web.Response(text="Bot is awake!")
@@ -588,8 +588,12 @@ async def handle_ping(request):
 async def start_web_server():
     """Starts the aiohttp web server."""
     port = int(os.getenv("PORT", 8080))
-    app_runner = web.AppRunner(web.Application())
-    app_runner.router.add_get("/", handle_ping)
+    
+    # Corrected logic: Create an Application object first
+    app_web = web.Application()
+    app_web.router.add_get("/", handle_ping)
+    
+    app_runner = web.AppRunner(app_web)
     await app_runner.setup()
     site = web.TCPSite(app_runner, '0.0.0.0', port)
     print(f"Web server started on port {port}")
@@ -616,15 +620,14 @@ async def main():
 
     await load_data_from_mongodb()
     
-    # --- Fix: Ensure client is started before setting commands ---
+    # Start the Pyrogram client and the web server together
     async with app:
-        # Client has now been started, so setting commands will work.
         await set_my_commands(app)
-        
-        # Start the web server in a background task
         asyncio.create_task(start_web_server())
         
-        # Keep the bot running indefinitely
+        print("Bot is now running and ready to handle messages.")
+        
+        # Keep the main coroutine running indefinitely
         await asyncio.Event().wait()
     
 if __name__ == "__main__":
