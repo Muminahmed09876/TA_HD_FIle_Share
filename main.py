@@ -7,19 +7,22 @@ from pyrogram.enums import ParseMode
 from pyrogram.errors import MessageNotModified, FloodWait, UserNotParticipant
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from threading import Thread
-from flask import Flask # <-- এই লাইনটি যোগ করুন
+from flask import Flask
+from motor.motor_asyncio import AsyncIOMotorClient
 
 # --- Bot Configuration (Using Environment Variables for Security) ---
 API_ID = int(os.environ.get("API_ID"))
-API_HASH = os.environ.get("API_HASH") # <-- এখানে অতিরিক্ত বন্ধনী সরানো হয়েছে
+API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 CHANNEL_ID = int(os.environ.get("CHANNEL_ID"))
 LOG_CHANNEL_ID = int(os.environ.get("LOG_CHANNEL_ID"))
 
-# --- Database Configuration ---
-DATABASE_FILE = "database.json"
-LAST_FILTER_FILE = "last_filter.txt"
+# --- MongoDB Configuration ---
+# Your MongoDB Atlas connection string
+MONGODB_URI = "mongodb+srv://TA_TA_File_Share:v8TNCCVnv9fFwMek@cluster0.yakdyvj.mongodb.net/"
+DATABASE_NAME = "TA_File_Share_Bot"
+COLLECTION_NAME = "bot_data"
 
 # --- Global Data Variables ---
 filters_dict = {}
@@ -31,10 +34,16 @@ autodelete_filters = {}
 user_states = {}
 last_filter = None
 
+# --- MongoDB Client ---
+client = AsyncIOMotorClient(MONGODB_URI)
+db = client[DATABASE_NAME]
+collection = db[COLLECTION_NAME]
+
 # --- Data Management Functions ---
-def save_data():
-    """Saves all bot data to a JSON file."""
+async def save_data():
+    """Saves all bot data to MongoDB."""
     data = {
+        "_id": "bot_state",
         "filters_dict": filters_dict,
         "user_list": list(user_list),
         "banned_users": list(banned_users),
@@ -43,36 +52,37 @@ def save_data():
         "autodelete_filters": autodelete_filters,
         "user_states": user_states
     }
-    with open(DATABASE_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+    await collection.update_one({"_id": "bot_state"}, {"$set": data}, upsert=True)
+    print("Data saved to MongoDB successfully.")
 
-def load_data():
-    """Loads all bot data from a JSON file."""
+async def load_data():
+    """Loads all bot data from MongoDB."""
     global filters_dict, user_list, banned_users, join_channels, restrict_status, autodelete_filters, user_states
-    if os.path.exists(DATABASE_FILE):
-        with open(DATABASE_FILE, "r") as f:
-            data = json.load(f)
-            filters_dict = data.get("filters_dict", {})
-            user_list = set(data.get("user_list", []))
-            banned_users = set(data.get("banned_users", []))
-            join_channels = data.get("join_channels", [])
-            restrict_status = data.get("restrict_status", False)
-            autodelete_filters = data.get("autodelete_filters", {})
-            user_states = data.get("user_states", {})
-        print("Data loaded successfully.")
+    
+    data = await collection.find_one({"_id": "bot_state"})
+    
+    if data:
+        filters_dict = data.get("filters_dict", {})
+        user_list = set(data.get("user_list", []))
+        banned_users = set(data.get("banned_users", []))
+        join_channels = data.get("join_channels", [])
+        restrict_status = data.get("restrict_status", False)
+        autodelete_filters = data.get("autodelete_filters", {})
+        user_states = data.get("user_states", {})
+        print("Data loaded from MongoDB successfully.")
     else:
-        print("No database file found. Starting with empty data.")
+        print("No data found in MongoDB. Starting with empty data.")
 
 def save_last_filter(keyword):
     """Saves the last active filter keyword to a file."""
-    with open(LAST_FILTER_FILE, "w") as f:
+    with open("last_filter.txt", "w") as f:
         f.write(keyword)
 
 def load_last_filter():
     """Loads the last active filter from a file."""
     global last_filter
-    if os.path.exists(LAST_FILTER_FILE):
-        with open(LAST_FILTER_FILE, "r") as f:
+    if os.path.exists("last_filter.txt"):
+        with open("last_filter.txt", "r") as f:
             last_filter = f.read().strip()
         print(f"Last filter '{last_filter}' loaded.")
     else:
@@ -94,26 +104,26 @@ def is_user_banned(user_id):
     """Checks if a user is banned."""
     return user_id in banned_users
 
-def ban_user(user_id):
+async def ban_user(user_id):
     """Bans a user."""
     banned_users.add(user_id)
-    save_data()
+    await save_data()
 
-def unban_user(user_id):
+async def unban_user(user_id):
     """Unbans a user."""
     banned_users.discard(user_id)
-    save_data()
+    await save_data()
 
 def get_join_channels():
     """Gets all required join channels."""
     return join_channels
 
-def add_join_channel(name, link, channel_id):
+async def add_join_channel(name, link, channel_id):
     """Adds a required join channel."""
     join_channels.append({"name": name, "link": link, "id": channel_id})
-    save_data()
+    await save_data()
 
-def delete_join_channel(identifier):
+async def delete_join_channel(identifier):
     """Deletes a join channel by link or ID."""
     global join_channels
     original_count = len(join_channels)
@@ -124,7 +134,7 @@ def delete_join_channel(identifier):
         join_channels = [c for c in join_channels if c['link'] != identifier]
     
     if len(join_channels) < original_count:
-        save_data()
+        await save_data()
         return True
     return False
 
@@ -171,7 +181,7 @@ async def start_cmd(client, message):
 
     if user_id not in user_list:
         user_list.add(user_id)
-        save_data()
+        await save_data()
         
         user = message.from_user
         user_full_name = (user.first_name or "") + (" " + user.last_name if user.last_name else "")
@@ -308,7 +318,7 @@ async def channel_text_handler(client, message):
         
         if keyword not in filters_dict:
             filters_dict[keyword] = []
-            save_data()
+            await save_data()
             await app.send_message(
                 ADMIN_ID,
                 f"✅ **New filter created!**\n"
@@ -334,7 +344,7 @@ async def channel_media_handler(client, message):
             filters_dict[keyword] = []
 
         filters_dict[keyword].append(message.id)
-        save_data()
+        await save_data()
         await app.send_message(
             ADMIN_ID,
             f"✅ **ফাইল '{last_filter}' ফিল্টারে যোগ করা হয়েছে।**"
@@ -358,7 +368,7 @@ async def channel_delete_handler(client, messages):
                 del filters_dict[keyword]
                 if keyword in autodelete_filters:
                     del autodelete_filters[keyword]
-                save_data()
+                await save_data()
                 await app.send_message(
                     ADMIN_ID,
                     f"🗑️ **Filter '{keyword}' has been deleted** because the original message was removed from the channel.",
@@ -367,7 +377,7 @@ async def channel_delete_handler(client, messages):
             
             if last_filter == keyword:
                 last_filter = None
-                with open(LAST_FILTER_FILE, "w") as f:
+                with open("last_filter.txt", "w") as f:
                     f.write("")
                 await app.send_message(
                     ADMIN_ID,
@@ -446,10 +456,10 @@ async def delete_cmd(client, message):
             del autodelete_filters[keyword]
         if last_filter == keyword:
             last_filter = None
-            with open(LAST_FILTER_FILE, "w") as f:
+            with open("last_filter.txt", "w") as f:
                 f.write("")
 
-        save_data()
+        await save_data()
         await message.reply_text(
             f"🗑️ **Filter '{keyword}' and its associated files have been deleted.**",
             parse_mode=ParseMode.MARKDOWN
@@ -504,7 +514,7 @@ async def handle_conversational_input(client, message):
                     channel_name = user_states[user_id]["channel_name"]
                     channel_link = user_states[user_id]["channel_link"]
                     
-                    add_join_channel(channel_name, channel_link, channel_id)
+                    await add_join_channel(channel_name, channel_link, channel_id)
                     del user_states[user_id]
                     await message.reply_text(f"✅ **চ্যানেল '{channel_name}' সফলভাবে যুক্ত হয়েছে!**")
                 except ValueError:
@@ -525,7 +535,7 @@ async def delete_channel_cmd(client, message):
     
     identifier_to_delete = args[1]
     
-    if delete_join_channel(identifier_to_delete):
+    if await delete_join_channel(identifier_to_delete):
         await message.reply_text(f"🗑️ **চ্যানেলটি সফলভাবে মুছে ফেলা হয়েছে।**")
     else:
         await message.reply_text(f"❌ **এই আইডি বা লিংকের কোনো চ্যানেল খুঁজে পাওয়া যায়নি।**")
@@ -534,7 +544,7 @@ async def delete_channel_cmd(client, message):
 async def restrict_cmd(client, message):
     global restrict_status
     restrict_status = not restrict_status
-    save_data()
+    await save_data()
     status_text = "ON" if restrict_status else "OFF"
     await message.reply_text(f"🔒 **Message forwarding restriction is now {status_text}.**")
     
@@ -552,7 +562,7 @@ async def ban_cmd(client, message):
         if is_user_banned(user_id_to_ban):
             return await message.reply_text("⚠️ **This user is already banned.**")
         
-        ban_user(user_id_to_ban)
+        await ban_user(user_id_to_ban)
         await message.reply_text(f"✅ **User `{user_id_to_ban}` has been banned.**")
     except ValueError:
         await message.reply_text("❌ **Invalid User ID.** Please provide a numeric user ID.")
@@ -568,7 +578,7 @@ async def unban_cmd(client, message):
         if not is_user_banned(user_id_to_unban):
             return await message.reply_text("⚠️ **This user is not banned.**")
         
-        unban_user(user_id_to_unban)
+        await unban_user(user_id_to_unban)
         await message.reply_text(f"✅ **User `{user_id_to_unban}` has been unbanned.**")
     except ValueError:
         await message.reply_text("❌ **Invalid User ID.** Please provide a numeric user ID.")
@@ -607,7 +617,7 @@ async def auto_delete_cmd(client, message):
         autodelete_filters[keyword] = autodelete_time
         await message.reply_text(f"✅ **'{keyword}' ফিল্টারের জন্য অটো-ডিলিট {time_str} তে সেট করা হয়েছে।**")
     
-    save_data()
+    await save_data()
 
 @app.on_callback_query(filters.regex("check_join_status"))
 async def check_join_status_callback(client, callback_query):
@@ -635,11 +645,14 @@ async def channel_id_cmd(client, message):
     )
 
 # --- Bot start up ---
-if __name__ == "__main__":
-    load_data()
+async def main():
+    await load_data()
     load_last_filter()
     print("Starting Flask app...")
     Thread(target=run_flask).start()
-
     print("Starting Pyrogram client...")
-    app.run()
+    await app.start()
+    await app.join()
+
+if __name__ == "__main__":
+    asyncio.run(main())
