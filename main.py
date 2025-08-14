@@ -7,10 +7,11 @@ from pyrogram.enums import ParseMode
 from pyrogram.errors import MessageNotModified, FloodWait, UserNotParticipant
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from threading import Thread
+from flask import Flask # <-- এই লাইনটি যোগ করুন
 
 # --- Bot Configuration (Using Environment Variables for Security) ---
 API_ID = int(os.environ.get("API_ID"))
-API_HASH = os.environ.get("API_HASH")
+API_HASH = os.environ.get("API_HASH"))
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 CHANNEL_ID = int(os.environ.get("CHANNEL_ID"))
