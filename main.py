@@ -18,10 +18,10 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 CHANNEL_ID = int(os.environ.get("CHANNEL_ID"))
 LOG_CHANNEL_ID = int(os.environ.get("LOG_CHANNEL_ID"))
 
-# --- MongoDB Configuration ---
-MONGO_URI = os.environ.get("MONGO_URI") 
+# --- MongoDB Configuration (Direct Connection String) ---
+MONGO_URI = "mongodb+srv://TA_TA_File_Share:v8TNCCVnv9fFwMek@cluster0.yakdyvj.mongodb.net/"
 client = MongoClient(MONGO_URI)
-db = client["TA_HD_File_Share"] # Updated MongoDB database name
+db = client["TA_HD_File_Share"]
 
 # --- MongoDB Collections ---
 filters_collection = db["filters"]
