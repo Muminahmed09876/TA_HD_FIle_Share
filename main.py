@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import time
 from threading import Thread
 from flask import Flask
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -40,7 +41,6 @@ CHANNEL_ID = get_env_int("CHANNEL_ID", required=True)
 LOG_CHANNEL_ID = get_env_int("LOG_CHANNEL_ID", required=True)
 
 # --- MongoDB Configuration ---
-# Prefer setting MONGODB_URI as an environment variable for security.
 MONGODB_URI = os.environ.get("MONGODB_URI", "")
 DATABASE_NAME = os.environ.get("DATABASE_NAME", "TA_File_Share_Bot")
 COLLECTION_NAME = os.environ.get("COLLECTION_NAME", "bot_data")
@@ -58,6 +58,7 @@ last_filter: str | None = None
 # --- MongoDB Client (optional) ---
 mongo_client = None
 collection = None
+db = None
 if MONGODB_URI:
     try:
         mongo_client = AsyncIOMotorClient(MONGODB_URI)
@@ -133,6 +134,63 @@ def load_last_filter():
     except Exception:
         logger.exception("Failed to load last_filter.txt")
 
+# --- Pending delete persistence helpers (optional) ---
+async def schedule_pending_deletes():
+    """On startup, schedule any pending deletions stored in DB (if db exists)."""
+    if db is None:
+        return
+    try:
+        pending_coll = db.get_collection("pending_deletes")
+        now = int(time.time())
+        async for doc in pending_coll.find({}):
+            delay = doc.get("delete_at", now) - now
+            if delay <= 0:
+                try:
+                    await app.delete_messages(doc["chat_id"], doc["message_ids"])
+                except Exception:
+                    logger.exception("Failed to immediately delete pending messages")
+                await pending_coll.delete_one({"_id": doc["_id"]})
+            else:
+                asyncio.create_task(_delayed_delete_worker(doc["_id"], doc["chat_id"], doc["message_ids"], delay))
+        logger.info("Pending deletes scheduled from DB.")
+    except Exception:
+        logger.exception("schedule_pending_deletes failed")
+
+async def add_pending_delete(chat_id: int, message_ids: list, delay_seconds: int):
+    """Save pending delete to DB and schedule worker."""
+    delete_at = int(time.time()) + delay_seconds
+    if db is None:
+        # no persistence, schedule only in-memory
+        asyncio.create_task(delete_messages_later(chat_id, message_ids, delay_seconds))
+        return
+    try:
+        pending_coll = db.get_collection("pending_deletes")
+        res = await pending_coll.insert_one({"chat_id": chat_id, "message_ids": message_ids, "delete_at": delete_at})
+        asyncio.create_task(_delayed_delete_worker(res.inserted_id, chat_id, message_ids, delay_seconds))
+    except Exception:
+        logger.exception("add_pending_delete failed")
+        asyncio.create_task(delete_messages_later(chat_id, message_ids, delay_seconds))
+
+async def _delayed_delete_worker(doc_id, chat_id, message_ids, delay):
+    await asyncio.sleep(delay)
+    try:
+        await app.delete_messages(chat_id, message_ids)
+    except Exception:
+        logger.exception("Failed to delete scheduled messages")
+    if db is not None:
+        try:
+            await db.get_collection("pending_deletes").delete_one({"_id": doc_id})
+        except Exception:
+            logger.exception("Failed to remove pending delete doc")
+
+async def delete_messages_later(chat_id: int, message_ids: list, delay_seconds: int):
+    """Schedules the deletion of messages after a delay (memory-only)."""
+    await asyncio.sleep(delay_seconds)
+    try:
+        await app.delete_messages(chat_id, message_ids)
+    except Exception:
+        logger.exception("Failed to delete messages")
+
 # --- Flask App for Ping Service ---
 flask_app = Flask(__name__)
 
@@ -148,6 +206,7 @@ def run_flask():
     except Exception:
         port = 5000
     logger.info("Starting Flask on port %s", port)
+    # Note: this is the dev server; for heavy production use a WSGI server.
     flask_app.run(host='0.0.0.0', port=port)
 
 # --- Helper Functions ---
@@ -206,14 +265,6 @@ async def is_user_member(client: Client, user_id: int) -> bool:
             logger.exception("Error checking user %s in channel %s", user_id, channel.get('link'))
             return False
     return True
-
-async def delete_messages_later(chat_id: int, message_ids: list, delay_seconds: int):
-    """Schedules the deletion of messages after a delay."""
-    await asyncio.sleep(delay_seconds)
-    try:
-        await app.delete_messages(chat_id, message_ids)
-    except Exception:
-        logger.exception("Failed to delete messages")
 
 # --- Pyrogram Client ---
 app = Client(
@@ -337,7 +388,8 @@ async def start_cmd(client: Client, message):
             await message.reply_text("🎉 **সকল ফাইল পাঠানো সম্পন্ন হয়েছে!** আশা করি আপনি যা খুঁজছিলেন তা পেয়েছেন।")
 
             if delete_time > 0 and sent_message_ids:
-                asyncio.create_task(delete_messages_later(message.chat.id, sent_message_ids, delete_time))
+                # persist pending delete and schedule
+                await add_pending_delete(message.chat.id, sent_message_ids, delete_time)
         else:
             await message.reply_text("❌ **এই কিওয়ার্ডের জন্য কোনো ফাইল খুঁজে পাওয়া যায়নি।**")
         return
@@ -727,10 +779,21 @@ async def channel_id_cmd(client: Client, message):
 async def main():
     await load_data()
     load_last_filter()
+    # schedule pending deletes if any
+    asyncio.create_task(schedule_pending_deletes())
+
     logger.info("Starting Flask background thread...")
     Thread(target=run_flask, daemon=True).start()
     logger.info("Starting Pyrogram client...")
     await app.start()
+
+    # Log bot identity to ensure correct token
+    try:
+        me = await app.get_me()
+        logger.info("Bot logged in as: @%s (id=%s, is_bot=%s)", getattr(me, "username", None), getattr(me, "id", None), getattr(me, "is_bot", None))
+    except Exception:
+        logger.exception("Failed to fetch bot identity with get_me()")
+
     logger.info("Bot started. Entering idle state.")
     try:
         await idle()
