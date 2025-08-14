@@ -11,7 +11,7 @@ from flask import Flask # <-- এই লাইনটি যোগ করুন
 
 # --- Bot Configuration (Using Environment Variables for Security) ---
 API_ID = int(os.environ.get("API_ID"))
-API_HASH = os.environ.get("API_HASH"))
+API_HASH = os.environ.get("API_HASH") # <-- এখানে অতিরিক্ত বন্ধনী সরানো হয়েছে
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 CHANNEL_ID = int(os.environ.get("CHANNEL_ID"))
