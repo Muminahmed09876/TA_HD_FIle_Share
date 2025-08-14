@@ -1,1 +1,23 @@
-
+{
+    "filters_dict": {
+        "hello": [
+            640,
+            641,
+            642,
+            643,
+            644
+        ]
+    },
+    "user_list": [
+        7786319635,
+        6473423613
+    ],
+    "banned_users": [],
+    "join_channels": [
+    ],
+    "restrict_status": true,
+    "autodelete_filters": {
+        "hello": 1800
+    },
+    "user_states": {}
+}
