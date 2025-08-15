@@ -37,7 +37,6 @@ last_filter = None
 banned_users = set()
 join_channels = []
 restrict_status = False
-# Changed autodelete_filters to a single variable
 autodelete_time = 0 
 deep_link_keyword = None
 user_states = {}
@@ -71,7 +70,7 @@ def home():
                 background-color: #fff;
                 padding: 30px;
                 border-radius: 10px;
-                box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+                box-shadow: 4px 4px 8px rgba(0,0,0,0.1);
                 display: inline-block;
             }
             h1 {
@@ -102,7 +101,6 @@ def ping_service():
             print(f"Pinged {url} | Status Code: {response.status_code}")
         except requests.exceptions.RequestException as e:
             print(f"Error pinging {url}: {e}")
-        # Ping every 10 minutes (600 seconds)
         time.sleep(600)
 
 # --- Database Functions (Updated) ---
@@ -145,7 +143,7 @@ def load_data():
         last_filter = data.get("last_filter", None)
         join_channels = data.get("join_channels", [])
         restrict_status = data.get("restrict_status", False)
-        autodelete_time = data.get("autodelete_time", 0) # Load autodelete_time
+        autodelete_time = data.get("autodelete_time", 0)
         
         loaded_user_states = data.get("user_states", {})
         user_states = {int(uid): state for uid, state in loaded_user_states.items()}
@@ -174,10 +172,13 @@ async def is_user_member(client, user_id):
             if member.status not in ["member", "administrator", "creator"]:
                 return False
         except UserNotParticipant:
+            # User is not a member, so return False
             return False
         except Exception as e:
+            # Handle other potential errors gracefully
             print(f"Error checking user {user_id} in channel {channel['link']}: {e}")
             return False
+    # If all checks pass for all channels, user is a member
     return True
 
 async def delete_messages_later(chat_id, message_ids, delay_seconds):
@@ -230,7 +231,6 @@ async def start_cmd(client, message):
         keyword = deep_link_keyword
         if keyword in filters_dict and filters_dict[keyword]:
             
-            # --- New Feature Implementation ---
             if autodelete_time > 0:
                 minutes = autodelete_time // 60
                 hours = autodelete_time // 3600
@@ -242,7 +242,6 @@ async def start_cmd(client, message):
                 await message.reply_text(f"✅ **Files found!** Sending now. Please note, these files will be automatically deleted in **{delete_time_str}**.", parse_mode=ParseMode.MARKDOWN)
             else:
                 await message.reply_text(f"✅ **Files found!** Sending now...")
-            # --- End of New Feature Implementation ---
             
             sent_message_ids = []
             for file_id in filters_dict[keyword]:
@@ -313,7 +312,7 @@ async def channel_delete_handler(client, messages):
             keyword = message.text.lower().replace('#', '')
             if keyword in filters_dict:
                 del filters_dict[keyword]
-                if keyword == last_filter: # Check if the deleted filter was the last active one
+                if keyword == last_filter:
                     last_filter = None
                 save_data()
                 await app.send_message(ADMIN_ID, f"🗑️ **Filter '{keyword}' has been deleted.**")
