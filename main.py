@@ -370,7 +370,7 @@ async def delete_cmd(client, message):
     else:
         await message.reply_text(f"❌ **Filter '{keyword}' not found.**")
 
-@app.on_message(filters.private & filters.user(ADMIN_ID) & filters.text & ~filters.command(["add_channel", "delete_channel", "start", "broadcast", "delete", "ban", "unban", "restrict", "auto_delete", "channel_id"]))
+@app.on_message(filters.private & filters.user(ADMIN_ID) & (filters.text | filters.forwarded) & ~filters.command(["add_channel", "delete_channel", "start", "broadcast", "delete", "ban", "unban", "restrict", "auto_delete", "channel_id"]))
 async def handle_conversational_input(client, message):
     user_id = message.from_user.id
     if user_id in user_states:
@@ -379,30 +379,34 @@ async def handle_conversational_input(client, message):
             if state["step"] == "awaiting_name":
                 channel_name = message.text
                 user_states[user_id]["name"] = channel_name
-                user_states[user_id]["step"] = "awaiting_id"
+                user_states[user_id]["step"] = "awaiting_forward"
                 save_data()
-                return await message.reply_text("🔗 **এখন চ্যানেলটির আইডি দিন।**")
-            elif state["step"] == "awaiting_id":
-                channel_id = message.text
-                user_states[user_id]["id"] = channel_id
-                user_states[user_id]["step"] = "awaiting_link"
-                save_data()
-                return await message.reply_text("🔗 **এখন চ্যানেলটির লিংক দিন।**")
-            elif state["step"] == "awaiting_link":
-                channel_link = message.text
-                channel_name = user_states[user_id]["name"]
-                channel_id = user_states[user_id]["id"]
-                
-                # এখানে আমরা সকল ডেটা সংরক্ষণ করছি
-                join_channels.append({
-                    "name": channel_name,
-                    "link": channel_link,
-                    "id": channel_id
-                })
-                
-                del user_states[user_id]
-                save_data()
-                await message.reply_text(f"✅ **চ্যানেল `{channel_name}` সফলভাবে যুক্ত করা হয়েছে।**", parse_mode=ParseMode.MARKDOWN)
+                return await message.reply_text("➡️ **এখন চ্যানেল থেকে যেকোনো একটি মেসেজ এখানে ফরওয়ার্ড করুন।**")
+            elif state["step"] == "awaiting_forward":
+                if message.forward_from_chat:
+                    chat_id = message.forward_from_chat.id
+                    channel_name = user_states[user_id]["name"]
+                    
+                    try:
+                        # অটোমেটিকভাবে একটি ইনভাইট লিংক তৈরি করা হচ্ছে
+                        invite_link = await client.export_chat_invite_link(chat_id)
+                        
+                        join_channels.append({
+                            "name": channel_name,
+                            "link": invite_link,
+                            "id": chat_id
+                        })
+                        
+                        del user_states[user_id]
+                        save_data()
+                        await message.reply_text(f"✅ **চ্যানেল `{channel_name}` সফলভাবে যুক্ত করা হয়েছে।**\n🔗 **লিংক:** `{invite_link}`", parse_mode=ParseMode.MARKDOWN)
+                    except Exception as e:
+                        del user_states[user_id]
+                        save_data()
+                        await message.reply_text(f"❌ **ভুল হয়েছে।** সম্ভবত আপনার বট চ্যানেলটির অ্যাডমিন নয় বা লিংক তৈরি করতে পারছে না।\nত্রুটি: `{e}`", parse_mode=ParseMode.MARKDOWN)
+
+                else:
+                    return await message.reply_text("❌ **ভুল ইনপুট।** অনুগ্রহ করে একটি মেসেজ ফরওয়ার্ড করুন।")
 
         elif state["command"] == "channel_id_awaiting_message":
             if message.forward_from_chat:
