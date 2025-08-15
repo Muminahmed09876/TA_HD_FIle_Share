@@ -1,347 +1,499 @@
 import os
 import asyncio
-from pyrogram import Client, filters, types
-from pyrogram.types import (
-    InlineKeyboardMarkup, InlineKeyboardButton, Message
-)
+import time
+import threading
+from pyrogram import Client, filters
+from pyrogram.enums import ParseMode
+from pyrogram.errors import MessageNotModified, FloodWait, UserNotParticipant
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pymongo import MongoClient
-from datetime import datetime, timedelta
-from flask import Flask, request
+from dotenv import load_dotenv
+from flask import Flask, render_template_string
+import requests
 
-# ENV/Config
-API_ID = int(os.getenv('API_ID', 'YOUR_API_ID'))
-API_HASH = os.getenv('API_HASH', 'YOUR_API_HASH')
-BOT_TOKEN = os.getenv('BOT_TOKEN', 'YOUR_BOT_TOKEN')
-MONGODB_URL = os.getenv('MONGODB_URL', 'YOUR_MONGODB_URL')
+# --- Load Environment Variables ---
+load_dotenv()
 
-# MongoDB setup
-mongo = MongoClient(MONGODB_URL)
-db = mongo['TA_HD_File_Share']  # <-- MongoDB name set here!
+# --- Bot Configuration ---
+API_ID = int(os.environ.get("API_ID"))
+API_HASH = os.environ.get("API_HASH")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+ADMIN_ID = int(os.environ.get("ADMIN_ID"))
+RENDER_EXTERNAL_HOSTNAME = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+PORT = os.environ.get("PORT")
 
-# Collections
-users_col = db.users
-filters_col = db.filters
-channels_col = db.channels
-config_col = db.config
-logs_col = db.logs
-bans_col = db.bans
+CHANNEL_ID = -1002619816346
+LOG_CHANNEL_ID = -1002623880704
 
-# Pyrogram Client
-app = Client("file_share_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# --- MongoDB Configuration ---
+MONGO_URI = os.environ.get("MONGO_URI")
+DB_NAME = "TA_HD_File_Share"
+COLLECTION_NAME = "bot_data"
 
-# Flask App for Health/Ping
-flask_app = Flask(__name__)
+# --- In-memory data structures ---
+filters_dict = {}
+user_list = set()
+last_filter = None
+banned_users = set()
+join_channels = []
+restrict_status = False
+autodelete_filters = {}
+deep_link_keyword = None
+user_states = {}
 
-@flask_app.route("/ping", methods=["GET"])
-def ping():
-    return {"status": "ok", "message": "Bot is running!", "time": datetime.utcnow().isoformat()}
+# --- Database Client and Collection ---
+mongo_client = None
+db = None
+collection = None
 
-# Helper functions
+# --- Flask Web Server ---
+app_flask = Flask(__name__)
 
-def is_admin(user_id):
-    config = config_col.find_one({"_id": "admins"})
-    if not config: return False
-    return user_id in config.get("admin_ids", [])
+@app_flask.route('/')
+def home():
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Bot Status</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                background-color: #f0f2f5;
+                color: #333;
+                text-align: center;
+                padding-top: 50px;
+            }
+            .container {
+                background-color: #fff;
+                padding: 30px;
+                border-radius: 10px;
+                box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+                display: inline-block;
+            }
+            h1 {
+                color: #28a745;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>TA File Share Bot is running! ✅</h1>
+            <p>This page confirms that the bot's web server is active.</p>
+        </div>
+    </body>
+    </html>
+    """
+    return render_template_string(html_content)
 
-def get_config(name, default=None):
-    c = config_col.find_one({"_id": name})
-    return c.get("value", default) if c else default
+# Ping service to keep the bot alive
+def ping_service():
+    if not RENDER_EXTERNAL_HOSTNAME:
+        print("Render URL is not set. Ping service is disabled.")
+        return
 
-def set_config(name, value):
-    config_col.update_one({"_id": name}, {"$set": {"value": value}}, upsert=True)
+    url = f"http://{RENDER_EXTERNAL_HOSTNAME}"
+    while True:
+        try:
+            response = requests.get(url, timeout=10)
+            print(f"Pinged {url} | Status Code: {response.status_code}")
+        except requests.exceptions.RequestException as e:
+            print(f"Error pinging {url}: {e}")
+        # Ping every 10 minutes (600 seconds)
+        time.sleep(600)
 
-def log_event(event):
-    logs_col.insert_one({
-        "event": event,
-        "time": datetime.utcnow()
-    })
+# --- Database Functions ---
+def connect_to_mongodb():
+    global mongo_client, db, collection
+    try:
+        mongo_client = MongoClient(MONGO_URI)
+        db = mongo_client[DB_NAME]
+        collection = db[COLLECTION_NAME]
+        print("Successfully connected to MongoDB.")
+    except Exception as e:
+        print(f"Error connecting to MongoDB: {e}")
+        exit(1)
 
-def is_banned(user_id):
-    return bans_col.find_one({"user_id": user_id}) is not None
+def save_data():
+    data = {
+        "filters_dict": filters_dict,
+        "user_list": list(user_list),
+        "last_filter": last_filter,
+        "banned_users": list(banned_users),
+        "join_channels": join_channels,
+        "restrict_status": restrict_status,
+        "autodelete_filters": autodelete_filters,
+        "user_states": user_states
+    }
+    collection.update_one({"_id": "bot_data"}, {"$set": data}, upsert=True)
+    print("Data saved successfully to MongoDB.")
 
-# COMMANDS
+def load_data():
+    global filters_dict, user_list, last_filter, banned_users, join_channels, restrict_status, autodelete_filters, user_states
+    data = collection.find_one({"_id": "bot_data"})
+    if data:
+        filters_dict = data.get("filters_dict", {})
+        user_list = set(data.get("user_list", []))
+        banned_users = set(data.get("banned_users", []))
+        last_filter = data.get("last_filter", None)
+        join_channels = data.get("join_channels", [])
+        restrict_status = data.get("restrict_status", False)
+        autodelete_filters = data.get("autodelete_filters", {})
+        user_states = data.get("user_states", {})
+        print("Data loaded successfully from MongoDB.")
+    else:
+        print("No data found in MongoDB. Starting with empty data.")
+        save_data()
+
+# --- Pyrogram Client ---
+app = Client(
+    "ta_file_share_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
+
+# --- Helper Functions (Pyrogram) ---
+async def is_user_member(client, user_id):
+    if not join_channels:
+        return True
+    
+    for channel in join_channels:
+        try:
+            member = await client.get_chat_member(chat_id=channel['id'], user_id=user_id)
+            if member.status not in ["member", "administrator", "creator"]:
+                return False
+        except UserNotParticipant:
+            return False
+        except Exception as e:
+            print(f"Error checking user {user_id} in channel {channel['link']}: {e}")
+            return False
+    return True
+
+async def delete_messages_later(chat_id, message_ids, delay_seconds):
+    await asyncio.sleep(delay_seconds)
+    try:
+        await app.delete_messages(chat_id, message_ids)
+        print(f"Successfully deleted {len(message_ids)} messages from chat {chat_id} after {delay_seconds} seconds.")
+    except Exception as e:
+        print(f"Failed to delete messages from chat {chat_id}: {e}")
+
+# --- Message Handlers (Pyrogram) ---
 
 @app.on_message(filters.command("start") & filters.private)
-async def start_cmd(client, message: Message):
+async def start_cmd(client, message):
+    global deep_link_keyword
     user_id = message.from_user.id
-    if is_admin(user_id):
-        text = "🛡️ Admin Panel\n\nCommands:\n" \
-               "/filter\n/delete_filter\n/add_channel\n/delete_channel\n/auto_delete\n/forward_restrict\n/channel_id\n/broadcast\n/ban\n/unban\n/ping\n"
-        await message.reply(text)
-    else:
-        text = "👋 Welcome to File Share Bot!\n\nSend or click your file link to access files. Make sure you’ve joined required channels if any."
-        await message.reply(text)
-    users_col.update_one({"user_id": user_id}, {"$set": {"user_id": user_id}}, upsert=True)
-    log_event(f"/start by {user_id}")
+    user_list.add(user_id)
+    save_data()
+    
+    if user_id in banned_users:
+        return await message.reply_text("❌ **You are banned from using this bot.**")
 
-@app.on_message(filters.command("ping") & filters.private)
-async def ping_cmd(client, message: Message):
-    await message.reply(
-        f"🏓 Pong!\nBot is running.\nServer Time (UTC): {datetime.utcnow().isoformat()}"
+    # Log user info
+    user = message.from_user
+    log_message = (
+        f"➡️ **New User**\n"
+        f"🆔 User ID: `{user_id}`\n"
+        f"👤 Full Name: `{user.first_name} {user.last_name or ''}`"
     )
-
-@app.on_message(filters.command("filter") & filters.private)
-async def filter_cmd(client, message: Message):
-    user_id = message.from_user.id
-    if not is_admin(user_id):
-        return await message.reply("Only admin can use this command.")
-    await message.reply("Filter-এর নাম দিন:")
-
-    def name_filter(m): return m.from_user.id == user_id
-    name_msg = await app.listen(message.chat.id, filters=name_filter)
-    filter_name = name_msg.text.strip()
-
-    if filters_col.find_one({"name": filter_name}):
-        await message.reply("এই filter আগে থেকে আছে, নতুন করে ব্যবহার করা যাবে না।")
-        return
-
-    await message.reply("এখন ফাইল পাঠান (একাধিক ফাইল পাঠাতে পারেন):")
-    files = []
-    for _ in range(10):  # Max 10 files, can adjust
-        file_msg = await app.listen(message.chat.id, filters=name_filter, timeout=60)
-        if file_msg.document or file_msg.video or file_msg.photo:
-            files.append(file_msg)
-            await file_msg.reply("ফাইল গ্রহণ হয়েছে। আরও পাঠাতে পারেন, না হলে /done লিখুন।")
-        elif file_msg.text == "/done":
-            break
-
-    if not files:
-        await message.reply("কোনো ফাইল পাওয়া যায়নি।")
-        return
-
-    # Save filter to MongoDB
-    file_ids = []
-    for f in files:
-        file_ids.append(f.message_id)
-    filters_col.insert_one({
-        "name": filter_name,
-        "files": file_ids,
-        "created_by": user_id,
-        "created_at": datetime.utcnow()
-    })
-
-    # Forward files to File Store Channel
-    store_channel = get_config("file_store_channel")
-    if store_channel:
-        for f in files:
-            await f.forward(store_channel)
-    link = f"https://t.me/{client.me.username}?start={filter_name}"
-    await message.reply(f"Filter saved! Link:\n{link}")
-
-@app.on_message(filters.command("delete_filter") & filters.private)
-async def delete_filter_cmd(client, message: Message):
-    user_id = message.from_user.id
-    if not is_admin(user_id):
-        return await message.reply("Only admin can use this command.")
+    if user.username:
+        log_message += f"\n🔗 Username: @{user.username}"
+    try:
+        await client.send_message(LOG_CHANNEL_ID, log_message, parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        print(f"Failed to send log message: {e}")
+    
     args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        return await message.reply("ফিল্টার নাম দিন: /delete_filter <filter_name>")
-    filter_name = args[1].strip()
-    res = filters_col.delete_one({"name": filter_name})
-    if res.deleted_count:
-        await message.reply("Filter deleted.")
+    if len(args) > 1:
+        deep_link_keyword = args[1].lower()
+
+    if not await is_user_member(client, user_id):
+        buttons = [[InlineKeyboardButton(f"✅ Join {c['name']}", url=c['link'])] for c in join_channels]
+        buttons.append([InlineKeyboardButton("🔄 Try Again", callback_data="check_join_status")])
+        keyboard = InlineKeyboardMarkup(buttons)
+        return await message.reply_text(
+            "❌ **You must join the following channels to use this bot:**",
+            reply_markup=keyboard,
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+    if deep_link_keyword:
+        keyword = deep_link_keyword
+        if keyword in filters_dict and filters_dict[keyword]:
+            delete_time = autodelete_filters.get(keyword, 0)
+            await message.reply_text(f"✅ **Files found!** Sending now...")
+            sent_message_ids = []
+            for file_id in filters_dict[keyword]:
+                try:
+                    sent_msg = await app.copy_message(message.chat.id, CHANNEL_ID, file_id, protect_content=restrict_status)
+                    sent_message_ids.append(sent_msg.id)
+                    await asyncio.sleep(0.5)
+                except FloodWait as e:
+                    await asyncio.sleep(e.value)
+                    sent_msg = await app.copy_message(message.chat.id, CHANNEL_ID, file_id, protect_content=restrict_status)
+                    sent_message_ids.append(sent_msg.id)
+                except Exception as e:
+                    print(f"Error copying message {file_id}: {e}")
+            
+            await message.reply_text("🎉 **All files sent!**")
+            
+            if delete_time > 0:
+                asyncio.create_task(delete_messages_later(message.chat.id, sent_message_ids, delete_time))
+        else:
+            await message.reply_text("❌ **No files found for this keyword.**")
+        deep_link_keyword = None
+        return
+    
+    if user_id == ADMIN_ID:
+        await message.reply_text("🌟 **Welcome, Admin!** Check commands in the code.")
     else:
-        await message.reply("Filter পাওয়া যায়নি।")
+        await message.reply_text("👋 **Welcome!** You can access files via special links.")
 
-@app.on_message(filters.command("add_channel") & filters.private)
-async def add_channel_cmd(client, message: Message):
-    user_id = message.from_user.id
-    if not is_admin(user_id): return await message.reply("Only admin!")
-    await message.reply("Channel-এর নাম দিন:")
-    name_msg = await app.listen(message.chat.id, filters=lambda m: m.from_user.id == user_id)
-    channel_name = name_msg.text.strip()
-    await message.reply("Channel link দিন:")
-    link_msg = await app.listen(message.chat.id, filters=lambda m: m.from_user.id == user_id)
-    channel_link = link_msg.text.strip()
-    if channels_col.find_one({"link": channel_link}):
-        await message.reply("Channel আগেই add করা হয়েছে।")
-        return
-    channels_col.insert_one({"name": channel_name, "link": channel_link})
-    await message.reply("Channel added!")
-
-@app.on_message(filters.command("delete_channel") & filters.private)
-async def delete_channel_cmd(client, message: Message):
-    user_id = message.from_user.id
-    if not is_admin(user_id): return await message.reply("Only admin!")
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        return await message.reply("Channel link দিন: /delete_channel <channel_link>")
-    channel_link = args[1].strip()
-    res = channels_col.delete_one({"link": channel_link})
-    if res.deleted_count:
-        await message.reply("Channel deleted.")
-    else:
-        await message.reply("Channel পাওয়া যায়নি।")
-
-@app.on_message(filters.command("auto_delete") & filters.private)
-async def auto_delete_cmd(client, message: Message):
-    user_id = message.from_user.id
-    if not is_admin(user_id): return await message.reply("Only admin!")
-    btns = InlineKeyboardMarkup([
-        [InlineKeyboardButton("ON", callback_data="auto_delete_on"),
-         InlineKeyboardButton("OFF", callback_data="auto_delete_off")]
-    ])
-    await message.reply("Auto delete status:", reply_markup=btns)
-
-@app.on_callback_query(filters.regex(r"auto_delete_(on|off)"))
-async def auto_delete_cb(client, callback_query):
-    user_id = callback_query.from_user.id
-    if not is_admin(user_id): return await callback_query.answer("Only admin!")
-    status = callback_query.data.split("_")[2]
-    set_config("auto_delete", status == "on")
-    await callback_query.answer(f"Auto delete {'enabled' if status == 'on' else 'disabled'}.")
-
-@app.on_message(filters.command("forward_restrict") & filters.private)
-async def forward_restrict_cmd(client, message: Message):
-    user_id = message.from_user.id
-    if not is_admin(user_id): return await message.reply("Only admin!")
-    btns = InlineKeyboardMarkup([
-        [InlineKeyboardButton("ON", callback_data="forward_restrict_on"),
-         InlineKeyboardButton("OFF", callback_data="forward_restrict_off")]
-    ])
-    await message.reply("Forward restrict status:", reply_markup=btns)
-
-@app.on_callback_query(filters.regex(r"forward_restrict_(on|off)"))
-async def forward_restrict_cb(client, callback_query):
-    user_id = callback_query.from_user.id
-    if not is_admin(user_id): return await callback_query.answer("Only admin!")
-    status = callback_query.data.split("_")[2]
-    set_config("forward_restrict", status == "on")
-    await callback_query.answer(f"Forward restrict {'enabled' if status == 'on' else 'disabled'}.")
-
-@app.on_message(filters.command("ban") & filters.private)
-async def ban_cmd(client, message: Message):
-    user_id = message.from_user.id
-    if not is_admin(user_id): return await message.reply("Only admin!")
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        return await message.reply("User id দিন: /ban <user_id>")
-    ban_id = int(args[1].strip())
-    bans_col.insert_one({"user_id": ban_id})
-    await message.reply("User banned.")
-
-@app.on_message(filters.command("unban") & filters.private)
-async def unban_cmd(client, message: Message):
-    user_id = message.from_user.id
-    if not is_admin(user_id): return await message.reply("Only admin!")
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        return await message.reply("User id দিন: /unban <user_id>")
-    ban_id = int(args[1].strip())
-    bans_col.delete_one({"user_id": ban_id})
-    await message.reply("User unbanned.")
-
-@app.on_message(filters.command("broadcast") & filters.private)
-async def broadcast_cmd(client, message: Message):
-    user_id = message.from_user.id
-    if not is_admin(user_id): return await message.reply("Only admin!")
-    await message.reply("Broadcast মেসেজ লিখুন:")
-    msg = await app.listen(message.chat.id, filters=lambda m: m.from_user.id == user_id)
-    text = msg.text
-    users = [u["user_id"] for u in users_col.find()]
-    for uid in users:
-        try:
-            await app.send_message(uid, text)
-        except: continue
-    await message.reply("Broadcast sent.")
-
-@app.on_message(filters.command("channel_id") & filters.private)
-async def channel_id_cmd(client, message: Message):
-    user_id = message.from_user.id
-    if not is_admin(user_id): return await message.reply("Only admin!")
-    channels = channels_col.find()
-    text = "Channels:\n"
-    for c in channels:
-        text += f"{c['name']}: {c['link']}\n"
-    await message.reply(text)
-
-@app.on_message(filters.command("add_log_channel") & filters.private)
-async def add_log_channel_cmd(client, message: Message):
-    user_id = message.from_user.id
-    if not is_admin(user_id): return await message.reply("Only admin!")
-    await message.reply("Log channel id দিন:")
-    log_msg = await app.listen(message.chat.id, filters=lambda m: m.from_user.id == user_id)
-    log_channel_id = log_msg.text.strip()
-    set_config("log_channel", log_channel_id)
-    await message.reply("Log channel added.")
-
-@app.on_message(filters.command("add_file_store_channel") & filters.private)
-async def add_file_store_channel_cmd(client, message: Message):
-    user_id = message.from_user.id
-    if not is_admin(user_id): return await message.reply("Only admin!")
-    await message.reply("File store channel id দিন:")
-    store_msg = await app.listen(message.chat.id, filters=lambda m: m.from_user.id == user_id)
-    store_channel_id = store_msg.text.strip()
-    set_config("file_store_channel", store_channel_id)
-    await message.reply("File store channel added.")
-
-# DEP LINK & FILE ACCESS
-
-@app.on_message(filters.private & filters.regex(r"^/start\s+(.+)"))
-async def filter_access(client, message: Message):
-    user_id = message.from_user.id
-    if is_banned(user_id):
-        return await message.reply("You are banned from using this bot.")
-
-    filter_name = message.text.split(maxsplit=1)[1].strip()
-    f = filters_col.find_one({"name": filter_name})
-    if not f:
-        return await message.reply("Filter পাওয়া যায়নি।")
-    # Check channel join
-    channels = list(channels_col.find())
-    if channels:
-        missing = []
-        for c in channels:
-            try:
-                member = await app.get_chat_member(c["link"], user_id)
-                if member.status not in ["member", "administrator", "creator"]:
-                    missing.append(c)
-            except: missing.append(c)
-        if missing:
-            join_btns = [
-                [InlineKeyboardButton(f"Join {c['name']}", url=c["link"])] for c in missing
-            ]
-            join_btns.append([InlineKeyboardButton("Try Again", url=message.text)])
-            await message.reply("You must join the required channel(s) to access files.", reply_markup=InlineKeyboardMarkup(join_btns))
+@app.on_message(filters.channel & filters.text & filters.chat(CHANNEL_ID))
+async def channel_text_handler(client, message):
+    global last_filter
+    text = message.text
+    if text and len(text.split()) == 1:
+        keyword = text.lower().replace('#', '')
+        if not keyword:
             return
 
-    # Send files
-    auto_delete = get_config("auto_delete", False)
-    forward_restrict = get_config("forward_restrict", False)
-    for fid in f["files"]:
-        # File store channel থেকে নিতে চাইলে: await app.copy_message(...)
-        sent = await app.send_message(user_id, f"File for filter: {filter_name}")
-        if auto_delete:
-            # Schedule delete after 24h
-            asyncio.create_task(delete_later(sent.chat.id, sent.message_id, 24*3600))
-            await app.send_message(user_id, "⏳ This file will be deleted after 24 hours.")
-        # Forward restrict logic (pyrogram 2.x: disable_forward=True)
-        # But Telegram API sometimes restricts - use send_document(..., disable_forward=True)
-    log_channel = get_config("log_channel")
-    if log_channel:
-        await app.send_message(log_channel, f"User {user_id} accessed filter {filter_name}")
+        last_filter = keyword
+        save_data()
+        
+        if keyword not in filters_dict:
+            filters_dict[keyword] = []
+            save_data()
+            await app.send_message(
+                ADMIN_ID,
+                f"✅ **New filter created!**\n🔗 Share link: `https://t.me/{(await app.get_me()).username}?start={keyword}`",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            await app.send_message(ADMIN_ID, f"⚠️ **Filter '{keyword}' is already active.**")
 
-async def delete_later(chat_id, message_id, delay):
-    await asyncio.sleep(delay)
-    try:
-        await app.delete_messages(chat_id, message_id)
-    except: pass
+@app.on_message(filters.channel & filters.media & filters.chat(CHANNEL_ID))
+async def channel_media_handler(client, message):
+    if last_filter:
+        keyword = last_filter
+        if keyword not in filters_dict:
+            filters_dict[keyword] = []
+        filters_dict[keyword].append(message.id)
+        save_data()
+    else:
+        await app.send_message(ADMIN_ID, "⚠️ **No active filter found.**")
 
-# Run Bot & Flask (use threading or gunicorn for prod)
-if __name__ == "__main__":
-    import threading
+@app.on_deleted_messages(filters.channel & filters.chat(CHANNEL_ID))
+async def channel_delete_handler(client, messages):
+    global last_filter
+    for message in messages:
+        if message.text and len(message.text.split()) == 1:
+            keyword = message.text.lower().replace('#', '')
+            if keyword in filters_dict:
+                del filters_dict[keyword]
+                if keyword in autodelete_filters:
+                    del autodelete_filters[keyword]
+                save_data()
+                await app.send_message(ADMIN_ID, f"🗑️ **Filter '{keyword}' has been deleted.**")
+            
+            if last_filter == keyword:
+                last_filter = None
+                await app.send_message(ADMIN_ID, "📝 **Note:** The last active filter has been cleared.")
+                save_data()
 
-    # Fix Pyrogram run in thread for Python 3.10+ (asyncio event loop)
-    def run_bot():
+@app.on_message(filters.command("broadcast") & filters.private & filters.user(ADMIN_ID))
+async def broadcast_cmd(client, message):
+    if not message.reply_to_message:
+        return await message.reply_text("📌 **Reply to a message** with `/broadcast`.")
+    
+    sent_count = 0
+    failed_count = 0
+    total_users = len(user_list)
+    progress_msg = await message.reply_text(f"📢 **Broadcasting to {total_users} users...** (0/{total_users})")
+    
+    for user_id in list(user_list):
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            app.run()
+            if user_id in banned_users:
+                continue
+            await message.reply_to_message.copy(user_id, protect_content=True)
+            sent_count += 1
         except Exception as e:
-            print("Bot error:", e)
+            print(f"Failed to send broadcast to user {user_id}: {e}")
+            failed_count += 1
+        
+        if (sent_count + failed_count) % 10 == 0:
+            try:
+                await progress_msg.edit_text(
+                    f"📢 **Broadcasting...**\n✅ Sent: {sent_count}\n❌ Failed: {failed_count}\nTotal: {total_users}"
+                )
+            except MessageNotModified:
+                pass
+        
+        await asyncio.sleep(0.1)
+    
+    await progress_msg.edit_text(f"✅ **Broadcast complete!**\nSent to {sent_count} users.\nFailed to send to {failed_count} users.")
 
-    def run_flask():
-        flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+@app.on_message(filters.command("delete") & filters.private & filters.user(ADMIN_ID))
+async def delete_cmd(client, message):
+    global last_filter
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        return await message.reply_text("📌 **Please provide a keyword to delete.**")
+    keyword = args[1].lower()
+    if keyword in filters_dict:
+        del filters_dict[keyword]
+        if keyword in autodelete_filters:
+            del autodelete_filters[keyword]
+        if last_filter == keyword:
+            last_filter = None
+        save_data()
+        await message.reply_text(f"🗑️ **Filter '{keyword}' and its associated files have been deleted.**")
+    else:
+        await message.reply_text(f"❌ **Filter '{keyword}' not found.**")
 
-    threading.Thread(target=run_bot).start()
-    threading.Thread(target=run_flask).start()
+@app.on_message(filters.private & filters.user(ADMIN_ID) & filters.text & ~filters.command(["add_channel", "delete_channel", "start", "broadcast", "delete", "ban", "unban", "restrict", "auto_delete", "channel_id"]))
+async def handle_conversational_input(client, message):
+    user_id = message.from_user.id
+    if user_id in user_states:
+        state = user_states[user_id]
+        if state["command"] == "channel_id_awaiting_message":
+            if message.forward_from_chat:
+                chat_id = message.forward_from_chat.id
+                await message.reply_text(f"✅ **Channel ID:** `{chat_id}`")
+            else:
+                await message.reply_text("❌ **Invalid message.** Please forward a message directly from the channel.")
+            del user_states[user_id]
+            save_data()
+            return
+        # Add other conversational states here...
+
+@app.on_message(filters.command("add_channel") & filters.private & filters.user(ADMIN_ID))
+async def add_channel_cmd(client, message):
+    user_id = message.from_user.id
+    user_states[user_id] = {"command": "add_channel", "step": "awaiting_name"}
+    save_data()
+    await message.reply_text("📝 **চ্যানেলটির নাম লিখুন।**")
+
+@app.on_message(filters.command("delete_channel") & filters.private & filters.user(ADMIN_ID))
+async def delete_channel_cmd(client, message):
+    global join_channels
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        return await message.reply_text("📌 **ব্যবহার:** `/delete_channel <link or id>`")
+    identifier_to_delete = args[1]
+    found = False
+    new_join_channels = []
+    for channel in join_channels:
+        if str(channel.get('id')) == identifier_to_delete or channel['link'] == identifier_to_delete:
+            found = True
+        else:
+            new_join_channels.append(channel)
+    if found:
+        join_channels = new_join_channels
+        save_data()
+        await message.reply_text("🗑️ **চ্যানেলটি সফলভাবে মুছে ফেলা হয়েছে।**")
+    else:
+        await message.reply_text("❌ **এই আইডি বা লিংকের কোনো চ্যানেল খুঁজে পাওয়া যায়নি।**")
+
+@app.on_message(filters.command("restrict") & filters.private & filters.user(ADMIN_ID))
+async def restrict_cmd(client, message):
+    global restrict_status
+    restrict_status = not restrict_status
+    save_data()
+    status_text = "ON" if restrict_status else "OFF"
+    await message.reply_text(f"🔒 **Message forwarding restriction is now {status_text}.**")
+    
+@app.on_message(filters.command("ban") & filters.private & filters.user(ADMIN_ID))
+async def ban_cmd(client, message):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        return await message.reply_text("📌 **Usage:** `/ban <user_id>`")
+    try:
+        user_id_to_ban = int(args[1])
+        if user_id_to_ban in banned_users:
+            return await message.reply_text("⚠️ **This user is already banned.**")
+        banned_users.add(user_id_to_ban)
+        save_data()
+        await message.reply_text(f"✅ **User `{user_id_to_ban}` has been banned.**")
+    except ValueError:
+        await message.reply_text("❌ **Invalid User ID.**")
+
+@app.on_message(filters.command("unban") & filters.private & filters.user(ADMIN_ID))
+async def unban_cmd(client, message):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        return await message.reply_text("📌 **Usage:** `/unban <user_id>`")
+    try:
+        user_id_to_unban = int(args[1])
+        if user_id_to_unban not in banned_users:
+            return await message.reply_text("⚠️ **This user is not banned.**")
+        banned_users.remove(user_id_to_unban)
+        save_data()
+        await message.reply_text(f"✅ **User `{user_id_to_unban}` has been unbanned.**")
+    except ValueError:
+        await message.reply_text("❌ **Invalid User ID.**")
+
+@app.on_message(filters.command("auto_delete") & filters.private & filters.user(ADMIN_ID))
+async def auto_delete_cmd(client, message):
+    global last_filter
+    args = message.text.split(maxsplit=1)
+    if not last_filter:
+        return await message.reply_text("❌ **কোনো সক্রিয় ফিল্টার নেই।**")
+    if len(args) < 2:
+        return await message.reply_text("📌 **ব্যবহার:** `/auto_delete <time>`")
+    time_str = args[1].lower()
+    time_map = {'30m': 1800, '1h': 3600, '12h': 43200, '24h': 86400, 'off': 0}
+    if time_str not in time_map:
+        return await message.reply_text("❌ **ভুল সময় বিকল্প।**")
+    autodelete_time = time_map[time_str]
+    if autodelete_time == 0:
+        if last_filter in autodelete_filters:
+            del autodelete_filters[last_filter]
+            save_data()
+        await message.reply_text(f"🗑️ **অটো-ডিলিট বন্ধ করা হয়েছে।**")
+    else:
+        autodelete_filters[last_filter] = autodelete_time
+        save_data()
+        await message.reply_text(f"✅ **অটো-ডিলিট {time_str} তে সেট করা হয়েছে।**")
+
+@app.on_callback_query(filters.regex("check_join_status"))
+async def check_join_status_callback(client, callback_query):
+    user_id = callback_query.from_user.id
+    if await is_user_member(client, user_id):
+        await callback_query.message.edit_text("✅ **You have successfully joined!** Please send the link again.")
+    else:
+        buttons = [[InlineKeyboardButton(f"✅ Join {c['name']}", url=c['link'])] for c in join_channels]
+        buttons.append([InlineKeyboardButton("🔄 Try Again", callback_data="check_join_status")])
+        keyboard = InlineKeyboardMarkup(buttons)
+        await app.send_message(callback_query.message.chat.id, "❌ **You are still not a member.**", reply_markup=keyboard)
+
+@app.on_message(filters.command("channel_id") & filters.private & filters.user(ADMIN_ID))
+async def channel_id_cmd(client, message):
+    user_id = message.from_user.id
+    user_states[user_id] = {"command": "channel_id_awaiting_message"}
+    save_data()
+    await message.reply_text("➡️ **অনুগ্রহ করে একটি চ্যানেল থেকে একটি মেসেজ এখানে ফরওয়ার্ড করুন।**")
+
+# --- Run Services ---
+def run_flask_and_pyrogram():
+    # Connect to MongoDB and load data first
+    connect_to_mongodb()
+    load_data()
+
+    # Start Flask web server in a separate thread
+    flask_thread = threading.Thread(target=lambda: app_flask.run(host="0.0.0.0", port=PORT, use_reloader=False))
+    flask_thread.start()
+
+    # Start the ping service in a separate thread
+    ping_thread = threading.Thread(target=ping_service)
+    ping_thread.start()
+
+    # Run the Pyrogram bot in the main thread
+    print("Starting TA File Share Bot...")
+    app.run()
+
+if __name__ == "__main__":
+    run_flask_and_pyrogram()
