@@ -37,7 +37,7 @@ last_filter = None
 banned_users = set()
 join_channels = []
 restrict_status = False
-autodelete_time = 0 
+autodelete_time = 0
 deep_link_keyword = None
 user_states = {}
 
@@ -387,9 +387,10 @@ async def handle_conversational_input(client, message):
                 if not channel_id_or_link:
                     return await message.reply_text("❌ **ভুল ইনপুট।** আবার চেষ্টা করুন।")
                 
-                try:
-                    chat_id = int(channel_id_or_link)
-                except ValueError:
+                # --- Updated Logic for Channel ID/Link Handling ---
+                if channel_id_or_link.strip().startswith('-100'):
+                    chat_id = channel_id_or_link.strip()
+                else:
                     chat_id = channel_id_or_link.strip().replace("https://t.me/", "")
                     if not chat_id.startswith('@'):
                         chat_id = f'@{chat_id}'
@@ -401,6 +402,7 @@ async def handle_conversational_input(client, message):
                     "link": f"https://t.me/{chat_id.replace('@','')}",
                     "id": chat_id
                 })
+                # --- End of Updated Logic ---
                 
                 del user_states[user_id]
                 save_data()
