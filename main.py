@@ -37,7 +37,7 @@ last_filter = None
 banned_users = set()
 join_channels = []
 restrict_status = False
-autodelete_time = 0 
+autodelete_time = 0
 deep_link_keyword = None
 user_states = {}
 
@@ -170,12 +170,12 @@ async def is_user_member(client, user_id):
         try:
             member = await client.get_chat_member(chat_id=channel['id'], user_id=user_id)
             if member.status not in ["member", "administrator", "creator"]:
+                print(f"User {user_id} is not an active member in channel {channel['name']}.")
                 return False
         except UserNotParticipant:
-            # User is not a member, so return False
+            print(f"User {user_id} is not a participant in channel {channel['name']}.")
             return False
         except Exception as e:
-            # Handle other potential errors gracefully
             print(f"Error checking user {user_id} in channel {channel['link']}: {e}")
             return False
     # If all checks pass for all channels, user is a member
