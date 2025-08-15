@@ -52,7 +52,7 @@ app_flask = Flask(__name__)
 @app_flask.route('/')
 def home():
     html_content = """
-    <!DOCTYPE html>
+    <!DOCTYPE-html>
     <html lang="en">
     <head>
         <meta charset="UTF-8">
