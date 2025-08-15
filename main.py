@@ -12,11 +12,9 @@ from flask import Flask, render_template_string
 import requests
 
 # --- Load Environment Variables ---
-# এটি .env ফাইল থেকে সমস্ত ভেরিয়েবল লোড করবে।
 load_dotenv()
 
 # --- Bot Configuration ---
-# এখন মানগুলো os.environ থেকে পড়া হচ্ছে।
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -28,8 +26,7 @@ CHANNEL_ID = -1002619816346
 LOG_CHANNEL_ID = -1002623880704
 
 # --- MongoDB Configuration (Updated URI) ---
-# আপনার দেওয়া MongoDB URI সরাসরি এখানে বসানো হয়েছে।
-MONGO_URI = "mongodb+srv://TA_TA_File_Share:v8TNCCVnv9fFwMek@cluster0.yakdyvj.mongodb.net/"
+MONGO_URI = os.environ.get("MONGO_URI")
 DB_NAME = "TA_HD_File_Share"
 COLLECTION_NAME = "bot_data"
 
@@ -184,7 +181,6 @@ async def delete_messages_later(chat_id, message_ids, delay_seconds):
         print(f"Failed to delete messages from chat {chat_id}: {e}")
 
 # --- Message Handlers (Pyrogram) ---
-
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
     global deep_link_keyword
@@ -195,7 +191,6 @@ async def start_cmd(client, message):
     if user_id in banned_users:
         return await message.reply_text("❌ **You are banned from using this bot.**")
 
-    # Log user info
     user = message.from_user
     log_message = (
         f"➡️ **New User**\n"
