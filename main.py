@@ -37,7 +37,7 @@ last_filter = None
 banned_users = set()
 join_channels = []
 restrict_status = False
-autodelete_time = 0
+autodelete_time = 0 
 deep_link_keyword = None
 user_states = {}
 
@@ -379,30 +379,26 @@ async def handle_conversational_input(client, message):
             if state["step"] == "awaiting_name":
                 channel_name = message.text
                 user_states[user_id]["name"] = channel_name
-                user_states[user_id]["step"] = "awaiting_link_or_id"
+                user_states[user_id]["step"] = "awaiting_id"
                 save_data()
-                return await message.reply_text("🔗 **এখন চ্যানেলটির লিংক বা আইডি দিন।**")
-            elif state["step"] == "awaiting_link_or_id":
-                channel_id_or_link = message.text
-                if not channel_id_or_link:
-                    return await message.reply_text("❌ **ভুল ইনপুট।** আবার চেষ্টা করুন।")
-                
-                # --- Updated Logic for Channel ID/Link Handling ---
-                if channel_id_or_link.strip().startswith('-100'):
-                    chat_id = channel_id_or_link.strip()
-                else:
-                    chat_id = channel_id_or_link.strip().replace("https://t.me/", "")
-                    if not chat_id.startswith('@'):
-                        chat_id = f'@{chat_id}'
-                
+                return await message.reply_text("🔗 **এখন চ্যানেলটির আইডি দিন।**")
+            elif state["step"] == "awaiting_id":
+                channel_id = message.text
+                user_states[user_id]["id"] = channel_id
+                user_states[user_id]["step"] = "awaiting_link"
+                save_data()
+                return await message.reply_text("🔗 **এখন চ্যানেলটির লিংক দিন।**")
+            elif state["step"] == "awaiting_link":
+                channel_link = message.text
                 channel_name = user_states[user_id]["name"]
+                channel_id = user_states[user_id]["id"]
                 
+                # এখানে আমরা সকল ডেটা সংরক্ষণ করছি
                 join_channels.append({
                     "name": channel_name,
-                    "link": f"https://t.me/{chat_id.replace('@','')}",
-                    "id": chat_id
+                    "link": channel_link,
+                    "id": channel_id
                 })
-                # --- End of Updated Logic ---
                 
                 del user_states[user_id]
                 save_data()
