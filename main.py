@@ -37,7 +37,7 @@ last_filter = None
 banned_users = set()
 # Hardcoded channels as per user request
 join_channels = [
-    {"name": "Your Channel Name", "link": "https://t.me/your_channel_username", "id": -1001234567890}
+    {"name": "TA HD How To Download", "link": "https://t.me/TA_HD_How_To_Download", "id": -1002628995632}
 ]
 restrict_status = False
 # Changed autodelete_filters to a single variable
