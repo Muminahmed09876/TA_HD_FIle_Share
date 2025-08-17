@@ -37,7 +37,6 @@ last_filter = None
 banned_users = set()
 join_channels = []
 restrict_status = False
-# Changed autodelete_filters to a single variable
 autodelete_time = 0 
 deep_link_keyword = None
 user_states = {}
@@ -102,7 +101,6 @@ def ping_service():
             print(f"Pinged {url} | Status Code: {response.status_code}")
         except requests.exceptions.RequestException as e:
             print(f"Error pinging {url}: {e}")
-        # Ping every 10 minutes (600 seconds)
         time.sleep(600)
 
 # --- Database Functions (Updated) ---
@@ -145,7 +143,7 @@ def load_data():
         last_filter = data.get("last_filter", None)
         join_channels = data.get("join_channels", [])
         restrict_status = data.get("restrict_status", False)
-        autodelete_time = data.get("autodelete_time", 0) # Load autodelete_time
+        autodelete_time = data.get("autodelete_time", 0)
         
         loaded_user_states = data.get("user_states", {})
         user_states = {int(uid): state for uid, state in loaded_user_states.items()}
@@ -215,6 +213,21 @@ async def start_cmd(client, message):
     args = message.text.split(maxsplit=1)
     if len(args) > 1:
         deep_link_keyword = args[1].lower()
+        
+        # --- New Logging Feature for Deep Links ---
+        log_link_message = (
+            f"🔗 **New Deep Link Open!**\n\n"
+            f"🆔 User ID: `{user.id}`\n"
+            f"👤 User Name: `{user.first_name} {user.last_name or ''}`\n"
+            f"🔗 Link: `https://t.me/{(await client.get_me()).username}?start={deep_link_keyword}`"
+        )
+        if user.username:
+            log_link_message += f"\nUsername: @{user.username}"
+        try:
+            await client.send_message(LOG_CHANNEL_ID, log_link_message, parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            print(f"Failed to log deep link message: {e}")
+        # --- End of New Logging Feature ---
 
     if not await is_user_member(client, user_id):
         buttons = [[InlineKeyboardButton(f"✅ Join {c['name']}", url=c['link'])] for c in join_channels]
@@ -230,7 +243,6 @@ async def start_cmd(client, message):
         keyword = deep_link_keyword
         if keyword in filters_dict and filters_dict[keyword]:
             
-            # --- New Feature Implementation ---
             if autodelete_time > 0:
                 minutes = autodelete_time // 60
                 hours = autodelete_time // 3600
@@ -242,7 +254,6 @@ async def start_cmd(client, message):
                 await message.reply_text(f"✅ **Files found!** Sending now. Please note, these files will be automatically deleted in **{delete_time_str}**.", parse_mode=ParseMode.MARKDOWN)
             else:
                 await message.reply_text(f"✅ **Files found!** Sending now...")
-            # --- End of New Feature Implementation ---
             
             sent_message_ids = []
             for file_id in filters_dict[keyword]:
@@ -267,7 +278,19 @@ async def start_cmd(client, message):
         return
     
     if user_id == ADMIN_ID:
-        await message.reply_text("🌟 **Welcome, Admin!** Check commands in the code.")
+        admin_commands = (
+            "🌟 **Welcome, Admin! Here are your commands:**\n\n"
+            "**/broadcast** - Reply to a message with this command to broadcast it to all users.\n"
+            "**/delete <keyword>** - Delete a filter and its associated files.\n"
+            "**/add_channel** - Add a new compulsory join channel.\n"
+            "**/delete_channel <link or id>** - Delete a compulsory join channel.\n"
+            "**/restrict** - Toggle message forwarding restriction (ON/OFF).\n"
+            "**/ban <user_id>** - Ban a user.\n"
+            "**/unban <user_id>** - Unban a user.\n"
+            "**/auto_delete <time>** - Set auto-delete time for files (e.g., 30m, 1h, 12h, 24h, off).\n"
+            "**/channel_id** - Get the ID of a channel by forwarding a message from it."
+        )
+        await message.reply_text(admin_commands, parse_mode=ParseMode.MARKDOWN)
     else:
         await message.reply_text("👋 **Welcome!** You can access files via special links.")
 
@@ -313,7 +336,7 @@ async def channel_delete_handler(client, messages):
             keyword = message.text.lower().replace('#', '')
             if keyword in filters_dict:
                 del filters_dict[keyword]
-                if keyword == last_filter: # Check if the deleted filter was the last active one
+                if keyword == last_filter:
                     last_filter = None
                 save_data()
                 await app.send_message(LOG_CHANNEL_ID, f"🗑️ **Filter '{keyword}' has been deleted.**")
