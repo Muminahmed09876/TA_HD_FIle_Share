@@ -22,6 +22,7 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 RENDER_EXTERNAL_HOSTNAME = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
 PORT = os.environ.get("PORT")
 
+# Assuming the user wants to keep the original CHANNEL_ID and LOG_CHANNEL_ID
 CHANNEL_ID = -1002619816346
 LOG_CHANNEL_ID = -1002623880704
 
@@ -292,6 +293,7 @@ async def start_cmd(client, message):
         )
         await message.reply_text(admin_commands, parse_mode=ParseMode.MARKDOWN)
     else:
+        # User is not an admin, but is a member. Add a welcome message here.
         await message.reply_text("👋 **Welcome!** You can access files via special links.")
 
 @app.on_message(filters.channel & filters.text & filters.chat(CHANNEL_ID))
@@ -544,7 +546,7 @@ async def channel_id_cmd(client, message):
     user_states[user_id] = {"command": "channel_id_awaiting_message"}
     save_data()
     await message.reply_text("➡️ **অনুগ্রহ করে একটি চ্যানেল থেকে একটি মেসেজ এখানে ফরওয়ার্ড করুন।**")
-
+    
 # --- Run Services ---
 def run_flask_and_pyrogram():
     connect_to_mongodb()
