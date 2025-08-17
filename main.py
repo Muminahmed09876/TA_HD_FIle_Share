@@ -22,8 +22,13 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 RENDER_EXTERNAL_HOSTNAME = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
 PORT = os.environ.get("PORT")
 
-CHANNEL_ID = -1002619816346
+# --- Correct Channel IDs ---
+# This is the private channel where files are stored.
+CHANNEL_ID = -1002619816346 
+# This is the channel for logs.
 LOG_CHANNEL_ID = -1002623880704
+# The mandatory channel for users to join.
+JOIN_CHANNEL = -1002628995632
 
 # --- MongoDB Configuration ---
 MONGO_URI = os.environ.get("MONGO_URI")
@@ -40,8 +45,7 @@ join_channels = [
     {"name": "TA HD How To Download", "link": "https://t.me/TA_HD_How_To_Download", "id": -1002628995632}
 ]
 restrict_status = False
-# Changed autodelete_filters to a single variable
-autodelete_time = 0 
+autodelete_time = 0
 deep_link_keyword = None
 user_states = {}
 
@@ -146,12 +150,11 @@ def load_data():
         user_list = set(data.get("user_list", []))
         banned_users = set(data.get("banned_users", []))
         last_filter = data.get("last_filter", None)
-        # Load from DB or use hardcoded if DB is empty
         db_join_channels = data.get("join_channels", [])
         if db_join_channels:
             join_channels = db_join_channels
         restrict_status = data.get("restrict_status", False)
-        autodelete_time = data.get("autodelete_time", 0) # Load autodelete_time
+        autodelete_time = data.get("autodelete_time", 0)
         
         loaded_user_states = data.get("user_states", {})
         user_states = {int(uid): state for uid, state in loaded_user_states.items()}
@@ -236,7 +239,6 @@ async def start_cmd(client, message):
         keyword = deep_link_keyword
         if keyword in filters_dict and filters_dict[keyword]:
             
-            # --- New Feature Implementation ---
             if autodelete_time > 0:
                 minutes = autodelete_time // 60
                 hours = autodelete_time // 3600
@@ -248,7 +250,6 @@ async def start_cmd(client, message):
                 await message.reply_text(f"✅ **Files found!** Sending now. Please note, these files will be automatically deleted in **{delete_time_str}**.", parse_mode=ParseMode.MARKDOWN)
             else:
                 await message.reply_text(f"✅ **Files found!** Sending now...")
-            # --- End of New Feature Implementation ---
             
             sent_message_ids = []
             for file_id in filters_dict[keyword]:
@@ -292,7 +293,6 @@ async def channel_text_handler(client, message):
         if keyword not in filters_dict:
             filters_dict[keyword] = []
             save_data()
-            # Send message to log channel
             await app.send_message(
                 LOG_CHANNEL_ID,
                 f"✅ **New filter created!**\n🔗 Share link: `https://t.me/{(await app.get_me()).username}?start={keyword}`",
@@ -320,7 +320,7 @@ async def channel_delete_handler(client, messages):
             keyword = message.text.lower().replace('#', '')
             if keyword in filters_dict:
                 del filters_dict[keyword]
-                if keyword == last_filter: # Check if the deleted filter was the last active one
+                if keyword == last_filter:
                     last_filter = None
                 save_data()
                 await app.send_message(ADMIN_ID, f"🗑️ **Filter '{keyword}' has been deleted.**")
