@@ -174,19 +174,25 @@ app = Client(
 
 # --- Helper Functions (Pyrogram) ---
 async def is_user_member(client, user_id):
-    if not join_channels:
-        return True
-    
-    for channel in join_channels:
-        try:
-            member = await client.get_chat_member(chat_id=channel['id'], user_id=user_id)
-            if member.status not in ["member", "administrator", "creator"]:
+    if join_channels:
+        for channel_info in join_channels:
+            channel_id = channel_info.get('id')
+            if not channel_id:
+                continue
+
+            try:
+                chat_member_status = await client.get_chat_member(chat_id=channel_id, user_id=user_id)
+                member_status = chat_member_status.status
+                
+                # Check if the user is a valid member
+                if member_status not in ["member", "administrator", "creator"]:
+                    return False
+            
+            except UserNotParticipant:
                 return False
-        except UserNotParticipant:
-            return False
-        except Exception as e:
-            print(f"Error checking user {user_id} in channel {channel['link']}: {e}")
-            return False
+            except Exception as e:
+                print(f"Error checking user {user_id} in channel {channel_id}: {e}")
+                return False
     return True
 
 async def delete_messages_later(chat_id, message_ids, delay_seconds):
