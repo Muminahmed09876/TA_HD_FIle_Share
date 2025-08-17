@@ -35,7 +35,10 @@ filters_dict = {}
 user_list = set()
 last_filter = None
 banned_users = set()
-join_channels = []
+# Hardcoded channels as per user request
+join_channels = [
+    {"name": "Your Channel Name", "link": "https://t.me/your_channel_username", "id": -1001234567890}
+]
 restrict_status = False
 # Changed autodelete_filters to a single variable
 autodelete_time = 0 
@@ -143,7 +146,10 @@ def load_data():
         user_list = set(data.get("user_list", []))
         banned_users = set(data.get("banned_users", []))
         last_filter = data.get("last_filter", None)
-        join_channels = data.get("join_channels", [])
+        # Load from DB or use hardcoded if DB is empty
+        db_join_channels = data.get("join_channels", [])
+        if db_join_channels:
+            join_channels = db_join_channels
         restrict_status = data.get("restrict_status", False)
         autodelete_time = data.get("autodelete_time", 0) # Load autodelete_time
         
@@ -286,8 +292,9 @@ async def channel_text_handler(client, message):
         if keyword not in filters_dict:
             filters_dict[keyword] = []
             save_data()
+            # Send message to log channel
             await app.send_message(
-                ADMIN_ID,
+                LOG_CHANNEL_ID,
                 f"✅ **New filter created!**\n🔗 Share link: `https://t.me/{(await app.get_me()).username}?start={keyword}`",
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -371,43 +378,12 @@ async def delete_cmd(client, message):
     else:
         await message.reply_text(f"❌ **Filter '{keyword}' not found.**")
 
-@app.on_message(filters.private & filters.user(ADMIN_ID) & filters.text & ~filters.command(["add_channel", "delete_channel", "start", "broadcast", "delete", "ban", "unban", "restrict", "auto_delete", "channel_id"]))
+@app.on_message(filters.private & filters.user(ADMIN_ID) & filters.text & ~filters.command(["start", "broadcast", "delete", "ban", "unban", "restrict", "auto_delete", "channel_id"]))
 async def handle_conversational_input(client, message):
     user_id = message.from_user.id
     if user_id in user_states:
         state = user_states[user_id]
-        if state["command"] == "add_channel":
-            if state["step"] == "awaiting_name":
-                channel_name = message.text
-                user_states[user_id]["name"] = channel_name
-                user_states[user_id]["step"] = "awaiting_link_or_id"
-                save_data()
-                return await message.reply_text("🔗 **এখন চ্যানেলটির লিংক বা আইডি দিন।**")
-            elif state["step"] == "awaiting_link_or_id":
-                channel_id_or_link = message.text
-                if not channel_id_or_link:
-                    return await message.reply_text("❌ **ভুল ইনপুট।** আবার চেষ্টা করুন।")
-                
-                try:
-                    chat_id = int(channel_id_or_link)
-                except ValueError:
-                    chat_id = channel_id_or_link.strip().replace("https://t.me/", "")
-                    if not chat_id.startswith('@'):
-                        chat_id = f'@{chat_id}'
-                
-                channel_name = user_states[user_id]["name"]
-                
-                join_channels.append({
-                    "name": channel_name,
-                    "link": f"https://t.me/{chat_id.replace('@','')}",
-                    "id": chat_id
-                })
-                
-                del user_states[user_id]
-                save_data()
-                await message.reply_text(f"✅ **চ্যানেল `{channel_name}` সফলভাবে যুক্ত করা হয়েছে।**", parse_mode=ParseMode.MARKDOWN)
-
-        elif state["command"] == "channel_id_awaiting_message":
+        if state["command"] == "channel_id_awaiting_message":
             if message.forward_from_chat:
                 chat_id = message.forward_from_chat.id
                 await message.reply_text(f"✅ **Channel ID:** `{chat_id}`", parse_mode=ParseMode.MARKDOWN)
@@ -416,34 +392,6 @@ async def handle_conversational_input(client, message):
             del user_states[user_id]
             save_data()
             return
-
-@app.on_message(filters.command("add_channel") & filters.private & filters.user(ADMIN_ID))
-async def add_channel_cmd(client, message):
-    user_id = message.from_user.id
-    user_states[user_id] = {"command": "add_channel", "step": "awaiting_name"}
-    save_data()
-    await message.reply_text("📝 **চ্যানেলটির নাম লিখুন।**")
-
-@app.on_message(filters.command("delete_channel") & filters.private & filters.user(ADMIN_ID))
-async def delete_channel_cmd(client, message):
-    global join_channels
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        return await message.reply_text("📌 **ব্যবহার:** `/delete_channel <link or id>`", parse_mode=ParseMode.MARKDOWN)
-    identifier_to_delete = args[1]
-    found = False
-    new_join_channels = []
-    for channel in join_channels:
-        if str(channel.get('id')) == identifier_to_delete or channel['link'] == identifier_to_delete:
-            found = True
-        else:
-            new_join_channels.append(channel)
-    if found:
-        join_channels = new_join_channels
-        save_data()
-        await message.reply_text("🗑️ **চ্যানেলটি সফলভাবে মুছে ফেলা হয়েছে।**")
-    else:
-        await message.reply_text("❌ **এই আইডি বা লিংকের কোনো চ্যানেল খুঁজে পাওয়া যায়নি।**")
 
 @app.on_message(filters.command("restrict") & filters.private & filters.user(ADMIN_ID))
 async def restrict_cmd(client, message):
