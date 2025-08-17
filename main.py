@@ -20,7 +20,7 @@ API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 RENDER_EXTERNAL_HOSTNAME = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
-PORT = int(os.environ.get("PORT", "5000"))
+PORT = os.environ.get("PORT")
 
 CHANNEL_ID = -1002619816346
 LOG_CHANNEL_ID = -1002623880704
@@ -37,6 +37,7 @@ last_filter = None
 banned_users = set()
 join_channels = []
 restrict_status = False
+# Changed autodelete_filters to a single variable
 autodelete_time = 0 
 deep_link_keyword = None
 user_states = {}
@@ -101,9 +102,10 @@ def ping_service():
             print(f"Pinged {url} | Status Code: {response.status_code}")
         except requests.exceptions.RequestException as e:
             print(f"Error pinging {url}: {e}")
+        # Ping every 10 minutes (600 seconds)
         time.sleep(600)
 
-# --- Database Functions ---
+# --- Database Functions (Updated) ---
 def connect_to_mongodb():
     global mongo_client, db, collection
     try:
@@ -117,7 +119,9 @@ def connect_to_mongodb():
 
 def save_data():
     global filters_dict, user_list, last_filter, banned_users, join_channels, restrict_status, autodelete_time, user_states
+    
     str_user_states = {str(uid): state for uid, state in user_states.items()}
+
     data = {
         "filters_dict": filters_dict,
         "user_list": list(user_list),
@@ -141,9 +145,11 @@ def load_data():
         last_filter = data.get("last_filter", None)
         join_channels = data.get("join_channels", [])
         restrict_status = data.get("restrict_status", False)
-        autodelete_time = data.get("autodelete_time", 0)
+        autodelete_time = data.get("autodelete_time", 0) # Load autodelete_time
+        
         loaded_user_states = data.get("user_states", {})
         user_states = {int(uid): state for uid, state in loaded_user_states.items()}
+        
         print("Data loaded successfully from MongoDB.")
     else:
         print("No data found in MongoDB. Starting with empty data.")
@@ -157,10 +163,11 @@ app = Client(
     bot_token=BOT_TOKEN
 )
 
-# --- Helper Functions ---
+# --- Helper Functions (Pyrogram) ---
 async def is_user_member(client, user_id):
     if not join_channels:
         return True
+    
     for channel in join_channels:
         try:
             member = await client.get_chat_member(chat_id=channel['id'], user_id=user_id)
@@ -169,7 +176,7 @@ async def is_user_member(client, user_id):
         except UserNotParticipant:
             return False
         except Exception as e:
-            print(f"Error checking user {user_id} in channel {channel['id']}: {e}")
+            print(f"Error checking user {user_id} in channel {channel['link']}: {e}")
             return False
     return True
 
@@ -181,7 +188,7 @@ async def delete_messages_later(chat_id, message_ids, delay_seconds):
     except Exception as e:
         print(f"Failed to delete messages from chat {chat_id}: {e}")
 
-# --- Message Handlers ---
+# --- Message Handlers (Pyrogram) ---
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
     global deep_link_keyword, autodelete_time
@@ -222,6 +229,8 @@ async def start_cmd(client, message):
     if deep_link_keyword:
         keyword = deep_link_keyword
         if keyword in filters_dict and filters_dict[keyword]:
+            
+            # --- New Feature Implementation ---
             if autodelete_time > 0:
                 minutes = autodelete_time // 60
                 hours = autodelete_time // 3600
@@ -229,9 +238,12 @@ async def start_cmd(client, message):
                     delete_time_str = f"{hours} hour{'s' if hours > 1 else ''}"
                 else:
                     delete_time_str = f"{minutes} minute{'s' if minutes > 1 else ''}"
+                
                 await message.reply_text(f"✅ **Files found!** Sending now. Please note, these files will be automatically deleted in **{delete_time_str}**.", parse_mode=ParseMode.MARKDOWN)
             else:
                 await message.reply_text(f"✅ **Files found!** Sending now...")
+            # --- End of New Feature Implementation ---
+            
             sent_message_ids = []
             for file_id in filters_dict[keyword]:
                 try:
@@ -244,7 +256,9 @@ async def start_cmd(client, message):
                     sent_message_ids.append(sent_msg.id)
                 except Exception as e:
                     print(f"Error copying message {file_id}: {e}")
+            
             await message.reply_text("🎉 **All files sent!**")
+            
             if autodelete_time > 0:
                 asyncio.create_task(delete_messages_later(message.chat.id, sent_message_ids, autodelete_time))
         else:
@@ -265,18 +279,20 @@ async def channel_text_handler(client, message):
         keyword = text.lower().replace('#', '')
         if not keyword:
             return
+
         last_filter = keyword
         save_data()
+        
         if keyword not in filters_dict:
             filters_dict[keyword] = []
             save_data()
             await app.send_message(
-                ADMIN_ID,
+                LOG_CHANNEL_ID,
                 f"✅ **New filter created!**\n🔗 Share link: `https://t.me/{(await app.get_me()).username}?start={keyword}`",
                 parse_mode=ParseMode.MARKDOWN
             )
         else:
-            await app.send_message(ADMIN_ID, f"⚠️ **Filter '{keyword}' is already active.**")
+            await app.send_message(LOG_CHANNEL_ID, f"⚠️ **Filter '{keyword}' is already active.**")
 
 @app.on_message(filters.channel & filters.media & filters.chat(CHANNEL_ID))
 async def channel_media_handler(client, message):
@@ -287,7 +303,7 @@ async def channel_media_handler(client, message):
         filters_dict[keyword].append(message.id)
         save_data()
     else:
-        await app.send_message(ADMIN_ID, "⚠️ **No active filter found.**")
+        await app.send_message(LOG_CHANNEL_ID, "⚠️ **No active filter found.**")
 
 @app.on_deleted_messages(filters.channel & filters.chat(CHANNEL_ID))
 async def channel_delete_handler(client, messages):
@@ -297,23 +313,26 @@ async def channel_delete_handler(client, messages):
             keyword = message.text.lower().replace('#', '')
             if keyword in filters_dict:
                 del filters_dict[keyword]
-                if keyword == last_filter:
+                if keyword == last_filter: # Check if the deleted filter was the last active one
                     last_filter = None
                 save_data()
-                await app.send_message(ADMIN_ID, f"🗑️ **Filter '{keyword}' has been deleted.**")
+                await app.send_message(LOG_CHANNEL_ID, f"🗑️ **Filter '{keyword}' has been deleted.**")
+            
             if last_filter == keyword:
                 last_filter = None
-                await app.send_message(ADMIN_ID, "📝 **Note:** The last active filter has been cleared.")
+                await app.send_message(LOG_CHANNEL_ID, "📝 **Note:** The last active filter has been cleared.")
                 save_data()
 
 @app.on_message(filters.command("broadcast") & filters.private & filters.user(ADMIN_ID))
 async def broadcast_cmd(client, message):
     if not message.reply_to_message:
         return await message.reply_text("📌 **Reply to a message** with `/broadcast`.")
+    
     sent_count = 0
     failed_count = 0
     total_users = len(user_list)
     progress_msg = await message.reply_text(f"📢 **Broadcasting to {total_users} users...** (0/{total_users})")
+    
     for user_id in list(user_list):
         try:
             if user_id in banned_users:
@@ -323,6 +342,7 @@ async def broadcast_cmd(client, message):
         except Exception as e:
             print(f"Failed to send broadcast to user {user_id}: {e}")
             failed_count += 1
+        
         if (sent_count + failed_count) % 10 == 0:
             try:
                 await progress_msg.edit_text(
@@ -330,7 +350,9 @@ async def broadcast_cmd(client, message):
                 )
             except MessageNotModified:
                 pass
+        
         await asyncio.sleep(0.1)
+    
     await progress_msg.edit_text(f"✅ **Broadcast complete!**\nSent to {sent_count} users.\nFailed to send to {failed_count} users.")
 
 @app.on_message(filters.command("delete") & filters.private & filters.user(ADMIN_ID))
@@ -363,32 +385,34 @@ async def handle_conversational_input(client, message):
                 return await message.reply_text("🔗 **এখন চ্যানেলটির লিংক বা আইডি দিন।**")
             elif state["step"] == "awaiting_link_or_id":
                 channel_id_or_link = message.text
-                chat_id = None
+                if not channel_id_or_link:
+                    return await message.reply_text("❌ **ভুল ইনপুট।** আবার চেষ্টা করুন।")
+                
                 try:
                     chat_id = int(channel_id_or_link)
                 except ValueError:
                     chat_id = channel_id_or_link.strip().replace("https://t.me/", "")
-                    if chat_id.startswith("@"):
-                        chat_id = chat_id[1:]
-                    # এখানে chat_id এখন username, কিন্তু channel id দরকার!
-                    return await message.reply_text(
-                        "⚠️ **Please forward a message from your channel using `/channel_id` for accurate channel ID!**")
+                    if not chat_id.startswith('@'):
+                        chat_id = f'@{chat_id}'
+                
                 channel_name = user_states[user_id]["name"]
+                
                 join_channels.append({
                     "name": channel_name,
-                    "link": f"https://t.me/c/{str(chat_id)[4:]}" if str(chat_id).startswith("-100") else f"https://t.me/{chat_id}",
-                    "id": int(chat_id)
+                    "link": f"https://t.me/{chat_id.replace('@','')}",
+                    "id": chat_id
                 })
+                
                 del user_states[user_id]
                 save_data()
-                await message.reply_text(f"✅ **চ্যানেল `{channel_name}` সফলভাবে যুক্ত করা হয়েছে।**", parse_mode=ParseMode.MARKDOWN)
+                await message.reply_text(f"✅ **চ্যানেল `{channel_name}` সফলভাবে যুক্ত করা হয়েছে।**", parse_mode=ParseMode.MARKDOWN)
 
         elif state["command"] == "channel_id_awaiting_message":
             if message.forward_from_chat:
                 chat_id = message.forward_from_chat.id
                 await message.reply_text(f"✅ **Channel ID:** `{chat_id}`", parse_mode=ParseMode.MARKDOWN)
             else:
-                await message.reply_text("❌ **Invalid message. Please forward directly from the channel.**")
+                await message.reply_text("❌ **Invalid message.** Please forward a message directly from the channel.")
             del user_states[user_id]
             save_data()
             return
@@ -465,12 +489,16 @@ async def auto_delete_cmd(client, message):
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         return await message.reply_text("📌 **ব্যবহার:** `/auto_delete <time>`")
+    
     time_str = args[1].lower()
     time_map = {'30m': 1800, '1h': 3600, '12h': 43200, '24h': 86400, 'off': 0}
+    
     if time_str not in time_map:
         return await message.reply_text("❌ **ভুল সময় বিকল্প।**")
+    
     autodelete_time = time_map[time_str]
     save_data()
+    
     if autodelete_time == 0:
         await message.reply_text(f"🗑️ **অটো-ডিলিট বন্ধ করা হয়েছে।**")
     else:
@@ -494,26 +522,17 @@ async def channel_id_cmd(client, message):
     save_data()
     await message.reply_text("➡️ **অনুগ্রহ করে একটি চ্যানেল থেকে একটি মেসেজ এখানে ফরওয়ার্ড করুন।**")
 
-@app.on_message(filters.private & filters.user(ADMIN_ID))
-async def handle_channel_id_forward(client, message):
-    user_id = message.from_user.id
-    if user_states.get(user_id, {}).get("command") == "channel_id_awaiting_message":
-        if message.forward_from_chat:
-            chat_id = message.forward_from_chat.id
-            await message.reply_text(f"✅ **Channel ID:** `{chat_id}`", parse_mode=ParseMode.MARKDOWN)
-        else:
-            await message.reply_text("❌ **Invalid message. Please forward directly from the channel.**")
-        del user_states[user_id]
-        save_data()
-
 # --- Run Services ---
 def run_flask_and_pyrogram():
     connect_to_mongodb()
     load_data()
+
     flask_thread = threading.Thread(target=lambda: app_flask.run(host="0.0.0.0", port=PORT, use_reloader=False))
     flask_thread.start()
+
     ping_thread = threading.Thread(target=ping_service)
     ping_thread.start()
+
     print("Starting TA File Share Bot...")
     app.run()
 
