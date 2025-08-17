@@ -440,56 +440,33 @@ async def handle_conversational_input(client, message):
             save_data()
             return
 
-CHANNEL_ID = "-1002628995632"
-CHANNEL_LINK = "https://t.me/TA_HD_How_To_Download"
+@app.on_message(filters.command("add_channel") & filters.private & filters.user(ADMIN_ID))
+async def add_channel_cmd(client, message):
+    user_id = message.from_user.id
+    user_states[user_id] = {"command": "add_channel", "step": "awaiting_name"}
+    save_data()
+    await message.reply_text("📝 **চ্যানেলটির নাম লিখুন।**")
 
-
-async def is_member(user_id:int, context:ContextTypes.DEFAULT_TYPE)->bool :
-    try:
-        member = await context.bot.get_chat_member(CHANNEL_ID, user_id)
-        return member.status in ['member', 'administrator', 'creator']
-    except Exception as e:
-        print(f"Error Aa Gayi Hai Bhai: {str(e)}")
-        return False
-
-async def check_access(update:Update, context:ContextTypes.DEFAULT_TYPE):
-    if not await is_member(update.effective_user.id, context):
-        Keyboard = [
-            [InlineKeyboardButton('Join Our Channel', url=CHANNEL_LINK)],
-            [InlineKeyboardButton('Verify', callback_data='verify_membership')]
-        ]
-        await update.message.reply_text(
-            "Bhai Meri Channel Ko Join Karle",
-            reply_markup=InlineKeyboardMarkup(Keyboard)
-        )
-        return False
-    return True
-
-async def handle_callback(update:Update, context:ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == 'verify_membership':
-        if await is_member(query.from_user.id, context):
-            await query.edit_message_text("You Joined")
+@app.on_message(filters.command("delete_channel") & filters.private & filters.user(ADMIN_ID))
+async def delete_channel_cmd(client, message):
+    global join_channels
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        return await message.reply_text("📌 **ব্যবহার:** `/delete_channel <link or id>`", parse_mode=ParseMode.MARKDOWN)
+    identifier_to_delete = args[1]
+    found = False
+    new_join_channels = []
+    for channel in join_channels:
+        if str(channel.get('id')) == identifier_to_delete or channel['link'] == identifier_to_delete:
+            found = True
         else:
-            await query.edit_message_text("You Didnt Joined")
-
-
-async def start(update:Update, context:ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update, context):
-        return
-
-    await context.bot.send_message(chat_id=update.effective_chat.id,text="This Is TraxDinosaur")
-
-print("Bot Is Working")
-app = ApplicationBuilder().token("YOUR_BOT_TOKEN").build()
-
-start_handler = CommandHandler('start', start)
-app.add_handler(start_handler)
-callback_handler = CallbackQueryHandler(handle_callback)
-app.add_handler(callback_handler)
-app.run_polling()
+            new_join_channels.append(channel)
+    if found:
+        join_channels = new_join_channels
+        save_data()
+        await message.reply_text("🗑️ **চ্যানেলটি সফলভাবে মুছে ফেলা হয়েছে।**")
+    else:
+        await message.reply_text("❌ **এই আইডি বা লিংকের কোনো চ্যানেল খুঁজে পাওয়া যায়নি।**")
 
 @app.on_message(filters.command("restrict") & filters.private & filters.user(ADMIN_ID))
 async def restrict_cmd(client, message):
