@@ -40,15 +40,8 @@ autodelete_time = 0
 deep_link_keyword = None
 user_states = {}
 
-# --- Compulsory Join Channels (Hardcoded List) ---
-join_channels = [
-    {
-        "name": "TA_HD_How_To_Download",
-        "id": -1002628995632,
-        "link": "https://t.me/TA_HD_How_To_Download",
-    },
-    # Add more channels here if needed
-]
+CHANNEL_ID_2 = " -1002628995632"
+CHANNEL_LINK = "https://t.me/TA_HD_How_To_Download"
 
 # --- Database Client and Collection ---
 mongo_client = None
@@ -167,26 +160,43 @@ app = Client(
 )
 
 # --- Helper Functions (Pyrogram) ---
-async def is_user_member(client, user_id):
-    for channel in join_channels:
-        try:
-            member = await client.get_chat_member(channel["id"], user_id)
-            if member.status not in ['member', 'administrator', 'creator']:
-                return False
-        except UserNotParticipant:
-            return False
-        except Exception as e:
-            print(f"Error checking membership for {channel['id']}: {e}")
-            return False
+async def is_member(user_id:int, context:ContextTypes.DEFAULT_TYPE)->bool :
+    try:
+        member = await context.bot.get_chat_member(CHANNEL_ID_2, user_id)
+        return member.status in ['member', 'administrator', 'creator']
+    except Exception as e:
+        print(f"Error Aa Gayi Hai Bhai: {str(e)}")
+        return False
+
+async def check_access(update:Update, context:ContextTypes.DEFAULT_TYPE):
+    if not await is_member(update.effective_user.id, context):
+        Keyboard = [
+            [InlineKeyboardButton('Join Our Channel', url=CHANNEL_LINK)],
+            [InlineKeyboardButton('Verify', callback_data='verify_membership')]
+        ]
+        await update.message.reply_text(
+            "Bhai Meri Channel Ko Join Karle",
+            reply_markup=InlineKeyboardMarkup(Keyboard)
+        )
+        return False
     return True
 
-async def delete_messages_later(chat_id, message_ids, delay):
-    await asyncio.sleep(delay)
-    for msg_id in message_ids:
-        try:
-            await app.delete_messages(chat_id, msg_id)
-        except Exception as e:
-            print(f"Error deleting message {msg_id}: {e}")
+async def handle_callback(update:Update, context:ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == 'verify_membership':
+        if await is_member(query.from_user.id, context):
+            await query.edit_message_text("You Joined")
+        else:
+            await query.edit_message_text("You Didnt Joined")
+
+
+async def start(update:Update, context:ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update, context):
+        return
+
+    await context.bot.send_message(chat_id=update.effective_chat.id,text="This Is TraxDinosaur")
 
 # --- Message Handlers (Pyrogram) ---
 @app.on_message(filters.command("start") & filters.private)
