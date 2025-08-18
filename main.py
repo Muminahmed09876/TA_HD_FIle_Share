@@ -261,10 +261,13 @@ async def start_cmd(client, message):
             print(f"Failed to log deep link message: {e}")
 
     if not await is_user_member(client, user_id):
-        try_again_data = f"try_again_{deep_link_keyword}" if deep_link_keyword else "check_join_status"
+        # The key change is to use a URL button instead of a callback for "Try Again"
+        # This will open the deep link and re-trigger the bot's start command.
+        bot_username = (await client.get_me()).username
+        try_again_url = f"https://t.me/{bot_username}?start={deep_link_keyword}" if deep_link_keyword else f"https://t.me/{bot_username}"
         
         buttons = [[InlineKeyboardButton(f"✅ Join TA_HD_How_To_Download", url=CHANNEL_LINK)]]
-        buttons.append([InlineKeyboardButton("🔄 Try Again", callback_data=try_again_data)])
+        buttons.append([InlineKeyboardButton("🔄 Try Again", url=try_again_url)])
         keyboard = InlineKeyboardMarkup(buttons)
         
         return await message.reply_text(
@@ -468,30 +471,21 @@ async def auto_delete_cmd(client, message):
     else:
         await message.reply_text(f"✅ **অটো-ডিলিট {time_str} তে সেট করা হয়েছে।**")
 
-@app.on_callback_query(filters.regex("check_join_status|try_again_.*"))
+@app.on_callback_query(filters.regex("check_join_status"))
 async def check_join_status_callback(client, callback_query):
     user_id = callback_query.from_user.id
     await callback_query.answer("Checking membership...", show_alert=True)
     
-    keyword = None
-    if callback_query.data.startswith("try_again_"):
-        keyword = callback_query.data.replace("try_again_", "")
-
     if await is_user_member(client, user_id):
-        if keyword:
-            await callback_query.message.edit_text(f"✅ **You have successfully joined!**\n\nNow, please send the link again:\n`https://t.me/{(await client.get_me()).username}?start={keyword}`", parse_mode=ParseMode.MARKDOWN)
-        else:
-            await callback_query.message.edit_text("✅ **You have successfully joined!** Please send the link again.")
+        await callback_query.message.edit_text("✅ **You have successfully joined!**\n\n**Please go back to the chat and send your link again.**", parse_mode=ParseMode.MARKDOWN)
     else:
         buttons = [[InlineKeyboardButton(f"✅ Join TA_HD_How_To_Download", url=CHANNEL_LINK)]]
         
-        # Add the deep link keyword back to the button if it exists
-        if keyword:
-            try_again_data = f"try_again_{keyword}"
-        else:
-            try_again_data = "check_join_status"
+        # The key change here is using a URL button to automatically re-open the bot.
+        bot_username = (await client.get_me()).username
+        try_again_url = f"https://t.me/{bot_username}" # Opens the bot without any keyword
 
-        buttons.append([InlineKeyboardButton("🔄 Try Again", callback_data=try_again_data)])
+        buttons.append([InlineKeyboardButton("🔄 Try Again", url=try_again_url)])
         keyboard = InlineKeyboardMarkup(buttons)
         await callback_query.message.edit_text("❌ **You are still not a member.**", reply_markup=keyboard)
 
