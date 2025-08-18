@@ -167,26 +167,43 @@ app = Client(
 )
 
 # --- Helper Functions (Pyrogram) ---
-async def is_user_member(client, user_id):
-    for channel in join_channels:
-        try:
-            member = await client.get_chat_member(chat_id=channel['id'], user_id=user_id)
-            if member.status not in ["member", "administrator", "creator"]:
-                return False
-        except UserNotParticipant:
-            return False
-        except Exception as e:
-            print(f"Error checking user {user_id} in channel {channel['link']}: {e}")
-            return False
+async def is_member(user_id:int, context:ContextTypes.DEFAULT_TYPE)->bool :
+    try:
+        member = await context.bot.get_chat_member(CHANNEL_ID, user_id)
+        return member.status in ['member', 'administrator', 'creator']
+    except Exception as e:
+        print(f"Error Aa Gayi Hai Bhai: {str(e)}")
+        return False
+
+async def check_access(update:Update, context:ContextTypes.DEFAULT_TYPE):
+    if not await is_member(update.effective_user.id, context):
+        Keyboard = [
+            [InlineKeyboardButton('Join Our Channel', url=CHANNEL_LINK)],
+            [InlineKeyboardButton('Verify', callback_data='verify_membership')]
+        ]
+        await update.message.reply_text(
+            "Bhai Meri Channel Ko Join Karle",
+            reply_markup=InlineKeyboardMarkup(Keyboard)
+        )
+        return False
     return True
 
-async def delete_messages_later(chat_id, message_ids, delay_seconds):
-    await asyncio.sleep(delay_seconds)
-    try:
-        await app.delete_messages(chat_id, message_ids)
-        print(f"Successfully deleted {len(message_ids)} messages from chat {chat_id} after {delay_seconds} seconds.")
-    except Exception as e:
-        print(f"Failed to delete messages from chat {chat_id}: {e}")
+async def handle_callback(update:Update, context:ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == 'verify_membership':
+        if await is_member(query.from_user.id, context):
+            await query.edit_message_text("You Joined")
+        else:
+            await query.edit_message_text("You Didnt Joined")
+
+
+async def start(update:Update, context:ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update, context):
+        return
+
+    await context.bot.send_message(chat_id=update.effective_chat.id,text="This Is TraxDinosaur")
 
 # --- Message Handlers (Pyrogram) ---
 @app.on_message(filters.command("start") & filters.private)
