@@ -36,15 +36,10 @@ user_list = set()
 last_filter = None
 banned_users = set()
 restrict_status = False
-autodelete_time = 0 
+autodelete_time = 0
 deep_link_keyword = None
 user_states = {}
-
-# --- Join Channels Configuration ---
-# Your original code used these variables. They are included here to avoid changes.
-CHANNEL_ID_2 = -1002628995632
-CHANNEL_LINK = "https://t.me/TA_HD_How_To_Download"
-join_channels = [{"id": CHANNEL_ID_2, "name": "TA_HD_How_To_Download", "link": CHANNEL_LINK}]
+join_channels = [] # No longer hardcoded, will be loaded from DB
 
 # --- Database Client and Collection ---
 mongo_client = None
@@ -121,7 +116,7 @@ def connect_to_mongodb():
         exit(1)
 
 def save_data():
-    global filters_dict, user_list, last_filter, banned_users, restrict_status, autodelete_time, user_states
+    global filters_dict, user_list, last_filter, banned_users, restrict_status, autodelete_time, user_states, join_channels
     
     str_user_states = {str(uid): state for uid, state in user_states.items()}
 
@@ -132,13 +127,14 @@ def save_data():
         "banned_users": list(banned_users),
         "restrict_status": restrict_status,
         "autodelete_time": autodelete_time,
-        "user_states": str_user_states
+        "user_states": str_user_states,
+        "join_channels": join_channels
     }
     collection.update_one({"_id": "bot_data"}, {"$set": data}, upsert=True)
     print("Data saved successfully to MongoDB.")
 
 def load_data():
-    global filters_dict, user_list, last_filter, banned_users, restrict_status, autodelete_time, user_states
+    global filters_dict, user_list, last_filter, banned_users, restrict_status, autodelete_time, user_states, join_channels
     data = collection.find_one({"_id": "bot_data"})
     if data:
         filters_dict = data.get("filters_dict", {})
@@ -149,6 +145,7 @@ def load_data():
         autodelete_time = data.get("autodelete_time", 0)
         loaded_user_states = data.get("user_states", {})
         user_states = {int(uid): state for uid, state in loaded_user_states.items()}
+        join_channels = data.get("join_channels", [])
         print("Data loaded successfully from MongoDB.")
     else:
         print("No data found in MongoDB. Starting with empty data.")
@@ -163,54 +160,26 @@ app = Client(
 )
 
 # --- Helper Functions (Pyrogram) ---
-async def is_member(client, user_id):
-    try:
-        member = await client.get_chat_member(CHANNEL_ID_2, user_id)
-        return member.status in ['member', 'administrator', 'creator']
-    except Exception as e:
-        print(f"Error Aa Gayi Hai Bhai: {str(e)}")
-        return False
+async def check_user_membership(client, user_id):
+    """Checks if a user is a member of all required channels."""
+    required_to_join = []
+    if not join_channels:
+        return True, None
 
-# This function is not used in the final version but kept as per your original code.
-async def check_access(update, client):
-    if not await is_member(client, update.effective_user.id):
-        Keyboard = [
-            [InlineKeyboardButton('Join Our Channel', url=CHANNEL_LINK)],
-            [InlineKeyboardButton('Verify', callback_data='verify_membership')]
-        ]
-        await update.message.reply_text(
-            "Bhai Meri Channel Ko Join Karle",
-            reply_markup=InlineKeyboardMarkup(Keyboard)
-        )
-        return False
-    return True
+    for channel in join_channels:
+        try:
+            member = await client.get_chat_member(channel['id'], user_id)
+            if member.status not in ['member', 'administrator', 'creator']:
+                required_to_join.append(channel)
+        except UserNotParticipant:
+            required_to_join.append(channel)
+        except Exception as e:
+            print(f"Error checking membership for channel {channel['id']}: {e}")
+            
+    if required_to_join:
+        return False, required_to_join
+    return True, None
 
-# This function is not used in the final version but kept as per your original code.
-async def handle_callback(client, callback_query):
-    query = callback_query
-    await query.answer()
-
-    if query.data == 'verify_membership':
-        if await is_member(client, query.from_user.id):
-            await query.edit_message_text("You Joined")
-        else:
-            await query.edit_message_text("You Didnt Joined")
-
-# This function is not used in the final version but kept as per your original code.
-async def start_ptb(update, context):
-    if not await check_access(update, context):
-        return
-    await context.bot.send_message(chat_id=update.effective_chat.id,text="This Is TraxDinosaur")
-    
-async def is_user_member(client, user_id):
-    try:
-        await client.get_chat_member(CHANNEL_ID_2, user_id)
-        return True
-    except UserNotParticipant:
-        return False
-    except Exception as e:
-        print(f"Error checking membership: {e}")
-        return False
 
 async def delete_messages_later(chat_id, message_ids, delay_seconds):
     await asyncio.sleep(delay_seconds)
@@ -229,7 +198,10 @@ async def start_cmd(client, message):
     save_data()
     
     if user_id in banned_users:
-        return await message.reply_text("❌ **You are banned from using this bot.**")
+        sent_msg = await message.reply_text("❌ **You are banned from using this bot.**")
+        if autodelete_time > 0:
+            asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
+        return
 
     user = message.from_user
     log_message = (
@@ -240,7 +212,9 @@ async def start_cmd(client, message):
     if user.username:
         log_message += f"\n🔗 Username: @{user.username}"
     try:
-        await client.send_message(LOG_CHANNEL_ID, log_message, parse_mode=ParseMode.MARKDOWN)
+        log_msg = await client.send_message(LOG_CHANNEL_ID, log_message, parse_mode=ParseMode.MARKDOWN)
+        if autodelete_time > 0:
+            asyncio.create_task(delete_messages_later(log_msg.chat.id, [log_msg.id], autodelete_time))
     except Exception as e:
         print(f"Failed to send log message: {e}")
     
@@ -256,25 +230,28 @@ async def start_cmd(client, message):
         if user.username:
             log_link_message += f"\nUsername: @{user.username}"
         try:
-            await client.send_message(LOG_CHANNEL_ID, log_link_message, parse_mode=ParseMode.MARKDOWN)
+            log_msg = await client.send_message(LOG_CHANNEL_ID, log_link_message, parse_mode=ParseMode.MARKDOWN)
+            if autodelete_time > 0:
+                asyncio.create_task(delete_messages_later(log_msg.chat.id, [log_msg.id], autodelete_time))
         except Exception as e:
             print(f"Failed to log deep link message: {e}")
 
-    if not await is_user_member(client, user_id):
-        # The key change is to use a URL button instead of a callback for "Try Again"
-        # This will open the deep link and re-trigger the bot's start command.
+    is_member, required_to_join = await check_user_membership(client, user_id)
+    if not is_member:
+        buttons = [[InlineKeyboardButton(f"✅ Join Our Channel", url=channel['link'])] for channel in required_to_join]
         bot_username = (await client.get_me()).username
         try_again_url = f"https://t.me/{bot_username}?start={deep_link_keyword}" if deep_link_keyword else f"https://t.me/{bot_username}"
-        
-        buttons = [[InlineKeyboardButton(f"✅ Join TA_HD_How_To_Download", url=CHANNEL_LINK)]]
         buttons.append([InlineKeyboardButton("🔄 Try Again", url=try_again_url)])
         keyboard = InlineKeyboardMarkup(buttons)
         
-        return await message.reply_text(
+        sent_msg = await message.reply_text(
             "❌ **You must join the following channels to use this bot:**",
             reply_markup=keyboard,
             parse_mode=ParseMode.MARKDOWN
         )
+        if autodelete_time > 0:
+            asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
+        return
 
     if deep_link_keyword:
         keyword = deep_link_keyword
@@ -286,9 +263,13 @@ async def start_cmd(client, message):
                     delete_time_str = f"{hours} hour{'s' if hours > 1 else ''}"
                 else:
                     delete_time_str = f"{minutes} minute{'s' if minutes > 1 else ''}"
-                await message.reply_text(f"✅ **Files found!** Sending now. Please note, these files will be automatically deleted in **{delete_time_str}**.", parse_mode=ParseMode.MARKDOWN)
+                sent_msg = await message.reply_text(f"✅ **Files found!** Sending now. Please note, these files will be automatically deleted in **{delete_time_str}**.", parse_mode=ParseMode.MARKDOWN)
+                if autodelete_time > 0:
+                    asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
             else:
-                await message.reply_text(f"✅ **Files found!** Sending now...")
+                sent_msg = await message.reply_text(f"✅ **Files found!** Sending now...")
+                if autodelete_time > 0:
+                    asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
             sent_message_ids = []
             for file_id in filters_dict[keyword]:
                 try:
@@ -301,11 +282,18 @@ async def start_cmd(client, message):
                     sent_message_ids.append(sent_msg.id)
                 except Exception as e:
                     print(f"Error copying message {file_id}: {e}")
-            await message.reply_text("🎉 **All files sent!**")
             if autodelete_time > 0:
                 asyncio.create_task(delete_messages_later(message.chat.id, sent_message_ids, autodelete_time))
+
+            sent_msg = await message.reply_text("🎉 **All files sent!**")
+            if autodelete_time > 0:
+                asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
+
         else:
-            await message.reply_text("❌ **No files found for this keyword.**")
+            sent_msg = await message.reply_text("❌ **No files found for this keyword.**")
+            if autodelete_time > 0:
+                asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
+
         deep_link_keyword = None
         return
     
@@ -318,11 +306,160 @@ async def start_cmd(client, message):
             "**/ban <user_id>** - Ban a user.\n"
             "**/unban <user_id>** - Unban a user.\n"
             "**/auto_delete <time>** - Set auto-delete time for files (e.g., 30m, 1h, 12h, 24h, off).\n"
-            "**/channel_id** - Get the ID of a channel by forwarding a message from it."
+            "**/channel_id** - Get the ID of a channel by forwarding a message from it.\n"
+            "**/add_channel** - Add a new mandatory join channel.\n"
+            "**/delete_channel** - Delete a mandatory join channel.\n"
+            "**/list_channels** - List all mandatory join channels."
         )
-        await message.reply_text(admin_commands, parse_mode=ParseMode.MARKDOWN)
+        sent_msg = await message.reply_text(admin_commands, parse_mode=ParseMode.MARKDOWN)
+        if autodelete_time > 0:
+            asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
     else:
-        await message.reply_text("👋 **Welcome!** You can access files via special links.")
+        sent_msg = await message.reply_text("👋 **Welcome!** You can access files via special links.")
+        if autodelete_time > 0:
+            asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
+
+@app.on_message(filters.command("add_channel") & filters.private & filters.user(ADMIN_ID))
+async def add_channel_cmd(client, message):
+    user_id = message.from_user.id
+    user_states[user_id] = {"command": "add_channel_name"}
+    save_data()
+    sent_msg = await message.reply_text("➡️ **Please send the name of the channel.**")
+    if autodelete_time > 0:
+        asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
+
+@app.on_message(filters.command("delete_channel") & filters.private & filters.user(ADMIN_ID))
+async def delete_channel_cmd(client, message):
+    global join_channels
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        sent_msg = await message.reply_text("📌 **Please provide the channel ID or link to delete.**\n**Usage:** `/delete_channel -10012345678` or `/delete_channel t.me/example`")
+        if autodelete_time > 0:
+            asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
+        return
+
+    query = args[1].strip()
+    original_channel_count = len(join_channels)
+    
+    # Filter out channels that match the query
+    join_channels = [c for c in join_channels if str(c['id']) != query and query not in c['link']]
+    
+    if len(join_channels) < original_channel_count:
+        save_data()
+        sent_msg = await message.reply_text(f"🗑️ **Channel matching `{query}` has been deleted.**")
+        if autodelete_time > 0:
+            asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
+    else:
+        sent_msg = await message.reply_text("❌ **No channel found with that ID or link.**")
+        if autodelete_time > 0:
+            asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
+
+@app.on_message(filters.command("list_channels") & filters.private & filters.user(ADMIN_ID))
+async def list_channels_cmd(client, message):
+    if not join_channels:
+        sent_msg = await message.reply_text("There are no mandatory join channels added yet.")
+    else:
+        channel_list_text = "📚 **Mandatory Join Channels:**\n"
+        for channel in join_channels:
+            channel_list_text += f"\n- **Name:** {channel['name']}\n  - **ID:** `{channel['id']}`\n  - **Link:** {channel['link']}"
+        sent_msg = await message.reply_text(channel_list_text, parse_mode=ParseMode.MARKDOWN)
+    if autodelete_time > 0:
+        asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
+
+
+@app.on_message(filters.text & filters.private & filters.user(ADMIN_ID) & ~filters.command(["start", "add_channel", "delete_channel", "list_channels", "broadcast", "delete", "restrict", "ban", "unban", "auto_delete", "channel_id"]))
+async def add_channel_state_handler(client, message):
+    user_id = message.from_user.id
+    if user_id in user_states:
+        state = user_states[user_id]["command"]
+        if state == "add_channel_name":
+            user_states[user_id]["name"] = message.text
+            user_states[user_id]["command"] = "add_channel_id"
+            save_data()
+            sent_msg = await message.reply_text("➡️ **Now, please send the channel's ID.** (e.g., -10012345678)")
+            if autodelete_time > 0:
+                asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
+
+        elif state == "add_channel_id":
+            try:
+                channel_id = int(message.text)
+                user_states[user_id]["id"] = channel_id
+                user_states[user_id]["command"] = "add_channel_link"
+                save_data()
+                sent_msg = await message.reply_text("➡️ **Finally, please send the channel's link.**")
+                if autodelete_time > 0:
+                    asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
+
+            except ValueError:
+                sent_msg = await message.reply_text("❌ **Invalid channel ID.** Please try again with a number.")
+                if autodelete_time > 0:
+                    asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
+
+        elif state == "add_channel_link":
+            channel_link = message.text
+            new_channel = {
+                "name": user_states[user_id]["name"],
+                "id": user_states[user_id]["id"],
+                "link": channel_link
+            }
+            
+            # Check for duplicates before adding
+            if any(c['id'] == new_channel['id'] for c in join_channels):
+                sent_msg = await message.reply_text("⚠️ **This channel is already in the list.**")
+                if autodelete_time > 0:
+                    asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
+            else:
+                join_channels.append(new_channel)
+                save_data()
+                sent_msg = await message.reply_text("✅ **Channel added successfully!**")
+                if autodelete_time > 0:
+                    asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
+
+            del user_states[user_id]
+            save_data()
+
+@app.on_callback_query(filters.regex("check_join_status"))
+async def check_join_status_callback(client, callback_query):
+    user_id = callback_query.from_user.id
+    await callback_query.answer("Checking membership...", show_alert=True)
+    
+    is_member, required_to_join = await check_user_membership(client, user_id)
+
+    if is_member:
+        await callback_query.message.edit_text("✅ **You have successfully joined!**\n\n**Please go back to the chat and send your link again.**", parse_mode=ParseMode.MARKDOWN)
+    else:
+        buttons = [[InlineKeyboardButton(f"✅ Join Our Channel", url=channel['link'])] for channel in required_to_join]
+        bot_username = (await client.get_me()).username
+        try_again_url = f"https://t.me/{bot_username}"
+        buttons.append([InlineKeyboardButton("🔄 Try Again", url=try_again_url)])
+        keyboard = InlineKeyboardMarkup(buttons)
+        await callback_query.message.edit_text("❌ **You are still not a member.**", reply_markup=keyboard)
+
+
+@app.on_message(filters.command("channel_id") & filters.private & filters.user(ADMIN_ID))
+async def channel_id_cmd(client, message):
+    user_id = message.from_user.id
+    user_states[user_id] = {"command": "channel_id_awaiting_message"}
+    save_data()
+    sent_msg = await message.reply_text("➡️ **অনুগ্রহ করে একটি চ্যানেল থেকে একটি মেসেজ এখানে ফরওয়ার্ড করুন।**")
+    if autodelete_time > 0:
+        asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
+    
+@app.on_message(filters.forwarded & filters.private & filters.user(ADMIN_ID))
+async def forwarded_message_handler(client, message):
+    user_id = message.from_user.id
+    if user_id in user_states and user_states[user_id].get("command") == "channel_id_awaiting_message":
+        if message.forward_from_chat:
+            channel_id = message.forward_from_chat.id
+            sent_msg = await message.reply_text(f"✅ **Channel ID:** `{channel_id}`", parse_mode=ParseMode.MARKDOWN)
+            if autodelete_time > 0:
+                asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
+        else:
+            sent_msg = await message.reply_text("❌ **এটি একটি চ্যানেল মেসেজ নয়।**")
+            if autodelete_time > 0:
+                asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
+        del user_states[user_id]
+        save_data()
 
 @app.on_message(filters.channel & filters.text & filters.chat(CHANNEL_ID))
 async def channel_text_handler(client, message):
@@ -337,13 +474,17 @@ async def channel_text_handler(client, message):
         if keyword not in filters_dict:
             filters_dict[keyword] = []
             save_data()
-            await app.send_message(
+            sent_msg = await app.send_message(
                 LOG_CHANNEL_ID,
                 f"✅ **New filter created!**\n🔗 Share link: `https://t.me/{(await app.get_me()).username}?start={keyword}`",
                 parse_mode=ParseMode.MARKDOWN
             )
+            if autodelete_time > 0:
+                asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
         else:
-            await app.send_message(LOG_CHANNEL_ID, f"⚠️ **Filter '{keyword}' is already active.**")
+            sent_msg = await app.send_message(LOG_CHANNEL_ID, f"⚠️ **Filter '{keyword}' is already active.**")
+            if autodelete_time > 0:
+                asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
 
 @app.on_message(filters.channel & filters.media & filters.chat(CHANNEL_ID))
 async def channel_media_handler(client, message):
@@ -354,7 +495,9 @@ async def channel_media_handler(client, message):
         filters_dict[keyword].append(message.id)
         save_data()
     else:
-        await app.send_message(LOG_CHANNEL_ID, "⚠️ **No active filter found.**")
+        sent_msg = await app.send_message(LOG_CHANNEL_ID, "⚠️ **No active filter found.**")
+        if autodelete_time > 0:
+            asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
 
 @app.on_deleted_messages(filters.channel & filters.chat(CHANNEL_ID))
 async def channel_delete_handler(client, messages):
@@ -367,147 +510,15 @@ async def channel_delete_handler(client, messages):
                 if keyword == last_filter:
                     last_filter = None
                 save_data()
-                await app.send_message(LOG_CHANNEL_ID, f"🗑️ **Filter '{keyword}' has been deleted.**")
+                sent_msg = await app.send_message(LOG_CHANNEL_ID, f"🗑️ **Filter '{keyword}' has been deleted.**")
+                if autodelete_time > 0:
+                    asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
             if last_filter == keyword:
                 last_filter = None
-                await app.send_message(LOG_CHANNEL_ID, "📝 **Note:** The last active filter has been cleared.")
+                sent_msg = await app.send_message(LOG_CHANNEL_ID, "📝 **Note:** The last active filter has been cleared.")
+                if autodelete_time > 0:
+                    asyncio.create_task(delete_messages_later(sent_msg.chat.id, [sent_msg.id], autodelete_time))
                 save_data()
-
-@app.on_message(filters.command("broadcast") & filters.private & filters.user(ADMIN_ID))
-async def broadcast_cmd(client, message):
-    if not message.reply_to_message:
-        return await message.reply_text("📌 **Reply to a message** with `/broadcast`.")
-    sent_count = 0
-    failed_count = 0
-    total_users = len(user_list)
-    progress_msg = await message.reply_text(f"📢 **Broadcasting to {total_users} users...** (0/{total_users})")
-    for user_id in list(user_list):
-        try:
-            if user_id in banned_users:
-                continue
-            await message.reply_to_message.copy(user_id, protect_content=True)
-            sent_count += 1
-        except Exception as e:
-            print(f"Failed to send broadcast to user {user_id}: {e}")
-            failed_count += 1
-        if (sent_count + failed_count) % 10 == 0:
-            try:
-                await progress_msg.edit_text(
-                    f"📢 **Broadcasting...**\n✅ Sent: {sent_count}\n❌ Failed: {failed_count}\nTotal: {total_users}"
-                )
-            except MessageNotModified:
-                pass
-        await asyncio.sleep(0.1)
-    await progress_msg.edit_text(f"✅ **Broadcast complete!**\nSent to {sent_count} users.\nFailed to send to {failed_count} users.")
-
-@app.on_message(filters.command("delete") & filters.private & filters.user(ADMIN_ID))
-async def delete_cmd(client, message):
-    global last_filter
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        return await message.reply_text("📌 **Please provide a keyword to delete.**")
-    keyword = args[1].lower()
-    if keyword in filters_dict:
-        del filters_dict[keyword]
-        if last_filter == keyword:
-            last_filter = None
-        save_data()
-        await message.reply_text(f"🗑️ **Filter '{keyword}' and its associated files have been deleted.**")
-    else:
-        await message.reply_text(f"❌ **Filter '{keyword}' not found.**")
-
-@app.on_message(filters.command("restrict") & filters.private & filters.user(ADMIN_ID))
-async def restrict_cmd(client, message):
-    global restrict_status
-    restrict_status = not restrict_status
-    save_data()
-    status_text = "ON" if restrict_status else "OFF"
-    await message.reply_text(f"🔒 **Message forwarding restriction is now {status_text}.**")
-    
-@app.on_message(filters.command("ban") & filters.private & filters.user(ADMIN_ID))
-async def ban_cmd(client, message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        return await message.reply_text("📌 **Usage:** `/ban <user_id>`", parse_mode=ParseMode.MARKDOWN)
-    try:
-        user_id_to_ban = int(args[1])
-        if user_id_to_ban in banned_users:
-            return await message.reply_text("⚠️ **This user is already banned.**")
-        banned_users.add(user_id_to_ban)
-        save_data()
-        await message.reply_text(f"✅ **User `{user_id_to_ban}` has been banned.**", parse_mode=ParseMode.MARKDOWN)
-    except ValueError:
-        await message.reply_text("❌ **Invalid User ID.**")
-
-@app.on_message(filters.command("unban") & filters.private & filters.user(ADMIN_ID))
-async def unban_cmd(client, message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        return await message.reply_text("📌 **Usage:** `/unban <user_id>`", parse_mode=ParseMode.MARKDOWN)
-    try:
-        user_id_to_unban = int(args[1])
-        if user_id_to_unban not in banned_users:
-            return await message.reply_text("⚠️ **This user is not banned.**")
-        banned_users.remove(user_id_to_unban)
-        save_data()
-        await message.reply_text(f"✅ **User `{user_id_to_unban}` has been unbanned.**", parse_mode=ParseMode.MARKDOWN)
-    except ValueError:
-        await message.reply_text("❌ **Invalid User ID.**")
-
-@app.on_message(filters.command("auto_delete") & filters.private & filters.user(ADMIN_ID))
-async def auto_delete_cmd(client, message):
-    global autodelete_time
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        return await message.reply_text("📌 **ব্যবহার:** `/auto_delete <time>`")
-    time_str = args[1].lower()
-    time_map = {'30m': 1800, '1h': 3600, '12h': 43200, '24h': 86400, 'off': 0}
-    if time_str not in time_map:
-        return await message.reply_text("❌ **ভুল সময় বিকল্প।**")
-    autodelete_time = time_map[time_str]
-    save_data()
-    if autodelete_time == 0:
-        await message.reply_text(f"🗑️ **অটো-ডিলিট বন্ধ করা হয়েছে।**")
-    else:
-        await message.reply_text(f"✅ **অটো-ডিলিট {time_str} তে সেট করা হয়েছে।**")
-
-@app.on_callback_query(filters.regex("check_join_status"))
-async def check_join_status_callback(client, callback_query):
-    user_id = callback_query.from_user.id
-    await callback_query.answer("Checking membership...", show_alert=True)
-    
-    if await is_user_member(client, user_id):
-        await callback_query.message.edit_text("✅ **You have successfully joined!**\n\n**Please go back to the chat and send your link again.**", parse_mode=ParseMode.MARKDOWN)
-    else:
-        buttons = [[InlineKeyboardButton(f"✅ Join TA_HD_How_To_Download", url=CHANNEL_LINK)]]
-        
-        # The key change here is using a URL button to automatically re-open the bot.
-        bot_username = (await client.get_me()).username
-        try_again_url = f"https://t.me/{bot_username}" # Opens the bot without any keyword
-
-        buttons.append([InlineKeyboardButton("🔄 Try Again", url=try_again_url)])
-        keyboard = InlineKeyboardMarkup(buttons)
-        await callback_query.message.edit_text("❌ **You are still not a member.**", reply_markup=keyboard)
-
-@app.on_message(filters.command("channel_id") & filters.private & filters.user(ADMIN_ID))
-async def channel_id_cmd(client, message):
-    user_id = message.from_user.id
-    user_states[user_id] = {"command": "channel_id_awaiting_message"}
-    save_data()
-    await message.reply_text("➡️ **অনুগ্রহ করে একটি চ্যানেল থেকে একটি মেসেজ এখানে ফরওয়ার্ড করুন।**")
-    
-@app.on_message(filters.forwarded & filters.private & filters.user(ADMIN_ID))
-async def forwarded_message_handler(client, message):
-    user_id = message.from_user.id
-    if user_id in user_states and user_states[user_id].get("command") == "channel_id_awaiting_message":
-        if message.forward_from_chat:
-            channel_id = message.forward_from_chat.id
-            await message.reply_text(f"✅ **Channel ID:** `{channel_id}`", parse_mode=ParseMode.MARKDOWN)
-        else:
-            await message.reply_text("❌ **এটি একটি চ্যানেল মেসেজ নয়।**")
-        del user_states[user_id]
-        save_data()
-
 
 # --- Run Services ---
 def run_flask_and_pyrogram():
