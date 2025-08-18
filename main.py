@@ -39,7 +39,7 @@ restrict_status = False
 autodelete_time = 0
 deep_link_keyword = None
 user_states = {}
-join_channels = [] # No longer hardcoded, will be loaded from DB
+join_channels = []
 
 # --- Database Client and Collection ---
 mongo_client = None
@@ -238,7 +238,10 @@ async def start_cmd(client, message):
 
     is_member, required_to_join = await check_user_membership(client, user_id)
     if not is_member:
-        buttons = [[InlineKeyboardButton(f"✅ Join Our Channel", url=channel['link'])] for channel in required_to_join]
+        buttons = []
+        for channel in required_to_join:
+            buttons.append([InlineKeyboardButton(f"✅ Join {channel['name']}", url=channel['link'])])
+        
         bot_username = (await client.get_me()).username
         try_again_url = f"https://t.me/{bot_username}?start={deep_link_keyword}" if deep_link_keyword else f"https://t.me/{bot_username}"
         buttons.append([InlineKeyboardButton("🔄 Try Again", url=try_again_url)])
@@ -428,7 +431,10 @@ async def check_join_status_callback(client, callback_query):
     if is_member:
         await callback_query.message.edit_text("✅ **You have successfully joined!**\n\n**Please go back to the chat and send your link again.**", parse_mode=ParseMode.MARKDOWN)
     else:
-        buttons = [[InlineKeyboardButton(f"✅ Join Our Channel", url=channel['link'])] for channel in required_to_join]
+        buttons = []
+        for channel in required_to_join:
+            buttons.append([InlineKeyboardButton(f"✅ Join {channel['name']}", url=channel['link'])])
+
         bot_username = (await client.get_me()).username
         try_again_url = f"https://t.me/{bot_username}"
         buttons.append([InlineKeyboardButton("🔄 Try Again", url=try_again_url)])
