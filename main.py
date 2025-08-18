@@ -10,8 +10,6 @@ from pymongo import MongoClient
 from dotenv import load_dotenv
 from flask import Flask, render_template_string
 import requests
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, CallbackQueryHandler
 
 # --- Load Environment Variables ---
 load_dotenv()
@@ -42,8 +40,11 @@ autodelete_time = 0
 deep_link_keyword = None
 user_states = {}
 
-CHANNEL_ID_2 = " -1002628995632"
+# --- Join Channels Configuration ---
+# Your original code used these variables. They are included here to avoid changes.
+CHANNEL_ID_2 = -1002628995632
 CHANNEL_LINK = "https://t.me/TA_HD_How_To_Download"
+join_channels = [{"id": CHANNEL_ID_2, "name": "TA_HD_How_To_Download", "link": CHANNEL_LINK}]
 
 # --- Database Client and Collection ---
 mongo_client = None
@@ -162,16 +163,17 @@ app = Client(
 )
 
 # --- Helper Functions (Pyrogram) ---
-async def is_member(user_id:int, context:ContextTypes.DEFAULT_TYPE)->bool :
+async def is_member(client, user_id):
     try:
-        member = await context.bot.get_chat_member(CHANNEL_ID_2, user_id)
+        member = await client.get_chat_member(CHANNEL_ID_2, user_id)
         return member.status in ['member', 'administrator', 'creator']
     except Exception as e:
         print(f"Error Aa Gayi Hai Bhai: {str(e)}")
         return False
 
-async def check_access(update:Update, context:ContextTypes.DEFAULT_TYPE):
-    if not await is_member(update.effective_user.id, context):
+# This function is not used in the final version but kept as per your original code.
+async def check_access(update, client):
+    if not await is_member(client, update.effective_user.id):
         Keyboard = [
             [InlineKeyboardButton('Join Our Channel', url=CHANNEL_LINK)],
             [InlineKeyboardButton('Verify', callback_data='verify_membership')]
@@ -183,22 +185,40 @@ async def check_access(update:Update, context:ContextTypes.DEFAULT_TYPE):
         return False
     return True
 
-async def handle_callback(update:Update, context:ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
+# This function is not used in the final version but kept as per your original code.
+async def handle_callback(client, callback_query):
+    query = callback_query
     await query.answer()
 
     if query.data == 'verify_membership':
-        if await is_member(query.from_user.id, context):
+        if await is_member(client, query.from_user.id):
             await query.edit_message_text("You Joined")
         else:
             await query.edit_message_text("You Didnt Joined")
 
-
-async def start(update:Update, context:ContextTypes.DEFAULT_TYPE):
+# This function is not used in the final version but kept as per your original code.
+async def start_ptb(update, context):
     if not await check_access(update, context):
         return
-
     await context.bot.send_message(chat_id=update.effective_chat.id,text="This Is TraxDinosaur")
+    
+async def is_user_member(client, user_id):
+    try:
+        await client.get_chat_member(CHANNEL_ID_2, user_id)
+        return True
+    except UserNotParticipant:
+        return False
+    except Exception as e:
+        print(f"Error checking membership: {e}")
+        return False
+
+async def delete_messages_later(chat_id, message_ids, delay_seconds):
+    await asyncio.sleep(delay_seconds)
+    try:
+        await app.delete_messages(chat_id, message_ids)
+        print(f"Successfully deleted messages {message_ids} in chat {chat_id}.")
+    except Exception as e:
+        print(f"Error deleting messages {message_ids} in chat {chat_id}: {e}")
 
 # --- Message Handlers (Pyrogram) ---
 @app.on_message(filters.command("start") & filters.private)
@@ -241,7 +261,7 @@ async def start_cmd(client, message):
             print(f"Failed to log deep link message: {e}")
 
     if not await is_user_member(client, user_id):
-        buttons = [[InlineKeyboardButton(f"✅ Join {c['name']}", url=c['link'])] for c in join_channels]
+        buttons = [[InlineKeyboardButton(f"✅ Join TA_HD_How_To_Download", url=CHANNEL_LINK)]]
         buttons.append([InlineKeyboardButton("🔄 Try Again", callback_data="check_join_status")])
         keyboard = InlineKeyboardMarkup(buttons)
         return await message.reply_text(
@@ -451,7 +471,7 @@ async def check_join_status_callback(client, callback_query):
     if await is_user_member(client, user_id):
         await callback_query.message.edit_text("✅ **You have successfully joined!** Please send the link again.")
     else:
-        buttons = [[InlineKeyboardButton(f"✅ Join {c['name']}", url=c['link'])] for c in join_channels]
+        buttons = [[InlineKeyboardButton(f"✅ Join TA_HD_How_To_Download", url=CHANNEL_LINK)]]
         buttons.append([InlineKeyboardButton("🔄 Try Again", callback_data="check_join_status")])
         keyboard = InlineKeyboardMarkup(buttons)
         await callback_query.message.edit_text("❌ **You are still not a member.**", reply_markup=keyboard)
@@ -462,6 +482,19 @@ async def channel_id_cmd(client, message):
     user_states[user_id] = {"command": "channel_id_awaiting_message"}
     save_data()
     await message.reply_text("➡️ **অনুগ্রহ করে একটি চ্যানেল থেকে একটি মেসেজ এখানে ফরওয়ার্ড করুন।**")
+    
+@app.on_message(filters.forwarded & filters.private & filters.user(ADMIN_ID))
+async def forwarded_message_handler(client, message):
+    user_id = message.from_user.id
+    if user_id in user_states and user_states[user_id].get("command") == "channel_id_awaiting_message":
+        if message.forward_from_chat:
+            channel_id = message.forward_from_chat.id
+            await message.reply_text(f"✅ **Channel ID:** `{channel_id}`", parse_mode=ParseMode.MARKDOWN)
+        else:
+            await message.reply_text("❌ **এটি একটি চ্যানেল মেসেজ নয়।**")
+        del user_states[user_id]
+        save_data()
+
 
 # --- Run Services ---
 def run_flask_and_pyrogram():
@@ -473,12 +506,6 @@ def run_flask_and_pyrogram():
     ping_thread.start()
     print("Starting TA File Share Bot...")
     app.run()
-
-start_handler = CommandHandler('start', start)
-app.add_handler(start_handler)
-callback_handler = CallbackQueryHandler(handle_callback)
-app.add_handler(callback_handler)
-app.run_polling()
 
 if __name__ == "__main__":
     run_flask_and_pyrogram()
