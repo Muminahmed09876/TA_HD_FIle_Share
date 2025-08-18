@@ -10,6 +10,8 @@ from pymongo import MongoClient
 from dotenv import load_dotenv
 from flask import Flask, render_template_string
 import requests
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, CallbackQueryHandler
 
 # --- Load Environment Variables ---
 load_dotenv()
@@ -471,6 +473,12 @@ def run_flask_and_pyrogram():
     ping_thread.start()
     print("Starting TA File Share Bot...")
     app.run()
+
+start_handler = CommandHandler('start', start)
+app.add_handler(start_handler)
+callback_handler = CallbackQueryHandler(handle_callback)
+app.add_handler(callback_handler)
+app.run_polling()
 
 if __name__ == "__main__":
     run_flask_and_pyrogram()
