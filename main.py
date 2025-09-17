@@ -171,37 +171,6 @@ async def is_member(client, user_id):
         print(f"Error Aa Gayi Hai Bhai: {str(e)}")
         return False
 
-# This function is not used in the final version but kept as per your original code.
-async def check_access(update, client):
-    if not await is_member(client, update.effective_user.id):
-        Keyboard = [
-            [InlineKeyboardButton('Join Our Channel', url=CHANNEL_LINK)],
-            [InlineKeyboardButton('Verify', callback_data='verify_membership')]
-        ]
-        await update.message.reply_text(
-            "Bhai Meri Channel Ko Join Karle",
-            reply_markup=InlineKeyboardMarkup(Keyboard)
-        )
-        return False
-    return True
-
-# This function is not used in the final version but kept as per your original code.
-async def handle_callback(client, callback_query):
-    query = callback_query
-    await query.answer()
-
-    if query.data == 'verify_membership':
-        if await is_member(client, query.from_user.id):
-            await query.edit_message_text("You Joined")
-        else:
-            await query.edit_message_text("You Didnt Joined")
-
-# This function is not used in the final version but kept as per your original code.
-async def start_ptb(update, context):
-    if not await check_access(update, context):
-        return
-    await context.bot.send_message(chat_id=update.effective_chat.id,text="This Is TraxDinosaur")
-    
 async def is_user_member(client, user_id):
     try:
         await client.get_chat_member(CHANNEL_ID_2, user_id)
@@ -222,16 +191,20 @@ async def delete_messages_later(chat_id, message_ids, delay_seconds):
 
 async def create_short_link(long_url, alias=None):
     base_url = "https://api.gplinks.com/api"
+    
+    # Using 'time' and 'type' for expiration, as shown in the screenshot
+    # '1' corresponds to 'hours' in GPlinks API
     params = {
         "api": GPLINKS_API_TOKEN,
         "url": long_url,
         "alias": alias,
+        "time": 1,
+        "type": "hours"
     }
     
     try:
-        # Use `requests` library for synchronous HTTP call
         response = requests.get(base_url, params=params)
-        response.raise_for_status() # Raise an exception for bad status codes
+        response.raise_for_status()
         result = response.json()
         
         if result.get("status") == "success":
@@ -328,7 +301,6 @@ async def start_cmd(client, message):
                         await message.reply_text("❌ **No files found for this keyword.**")
                     return
                 except ValueError:
-                    # Fall through to the main logic if the deep link format is wrong
                     pass
         
         log_link_message = (
@@ -368,8 +340,16 @@ async def start_cmd(client, message):
             short_url = await create_short_link(files_url)
             
             if short_url:
+                
+                buttons = [
+                    [InlineKeyboardButton("Open Link", url=short_url)],
+                    [InlineKeyboardButton("How to open the link", url="https://t.me/TA_HD_How_To_Download")]
+                ]
+                keyboard = InlineKeyboardMarkup(buttons)
+                
                 await message.reply_text(
-                    f"✅ **Files found!**\n\nClick the link below to get your files. This link will expire in **1 hour**.\n\n🔗 **Short Link:** `{short_url}`\n\n_This message and link will self-destruct in 1 hour._",
+                    f"✅ **Files found!**\n\nClick the button below to get your files. This link will expire in **1 hour**.",
+                    reply_markup=keyboard,
                     parse_mode=ParseMode.MARKDOWN,
                 )
                 
