@@ -10,6 +10,7 @@ from pymongo import MongoClient
 from dotenv import load_dotenv
 from flask import Flask, render_template_string
 import requests
+from datetime import datetime, timedelta
 
 # --- Load Environment Variables ---
 load_dotenv()
@@ -42,6 +43,7 @@ deep_link_keyword = None
 user_states = {}
 
 # --- Join Channels Configuration ---
+# Your original code used these variables. They are included here to avoid changes.
 CHANNEL_ID_2 = -1002628995632
 CHANNEL_LINK = "https://t.me/TA_HD_How_To_Download"
 join_channels = [{"id": CHANNEL_ID_2, "name": "Backup Channel", "link": CHANNEL_LINK}]
@@ -171,6 +173,37 @@ async def is_member(client, user_id):
         print(f"Error Aa Gayi Hai Bhai: {str(e)}")
         return False
 
+# This function is not used in the final version but kept as per your original code.
+async def check_access(update, client):
+    if not await is_member(client, update.effective_user.id):
+        Keyboard = [
+            [InlineKeyboardButton('Join Our Channel', url=CHANNEL_LINK)],
+            [InlineKeyboardButton('Verify', callback_data='verify_membership')]
+        ]
+        await update.message.reply_text(
+            "Bhai Meri Channel Ko Join Karle",
+            reply_markup=InlineKeyboardMarkup(Keyboard)
+        )
+        return False
+    return True
+
+# This function is not used in the final version but kept as per your original code.
+async def handle_callback(client, callback_query):
+    query = callback_query
+    await query.answer()
+
+    if query.data == 'verify_membership':
+        if await is_member(client, query.from_user.id):
+            await query.edit_message_text("You Joined")
+        else:
+            await query.edit_message_text("You Didnt Joined")
+
+# This function is not used in the final version but kept as per your original code.
+async def start_ptb(update, context):
+    if not await check_access(update, context):
+        return
+    await context.bot.send_message(chat_id=update.effective_chat.id,text="This Is TraxDinosaur")
+    
 async def is_user_member(client, user_id):
     try:
         await client.get_chat_member(CHANNEL_ID_2, user_id)
@@ -192,14 +225,18 @@ async def delete_messages_later(chat_id, message_ids, delay_seconds):
 async def create_short_link(long_url, alias=None):
     base_url = "https://api.gplinks.com/api"
     
-    # Using 'time' and 'type' for expiration, as shown in the screenshot
-    # '1' corresponds to 'hours' in GPlinks API
+    # Calculate expiration time one hour from now
+    expiration_time = datetime.now() + timedelta(hours=1)
+    
     params = {
         "api": GPLINKS_API_TOKEN,
         "url": long_url,
         "alias": alias,
-        "time": 1,
-        "type": "hours"
+        "Year": expiration_time.year,
+        "Month": expiration_time.month,
+        "Date": expiration_time.day,
+        "hours": expiration_time.hour,
+        "Min": expiration_time.minute
     }
     
     try:
@@ -243,66 +280,6 @@ async def start_cmd(client, message):
     args = message.text.split(maxsplit=1)
     if len(args) > 1:
         deep_link_keyword = args[1].lower()
-        
-        # Check if this is the special 'get_files' link
-        if deep_link_keyword.startswith("get_"):
-            parts = deep_link_keyword.split("_")
-            if len(parts) >= 3:
-                keyword = parts[1]
-                timestamp_str = parts[2]
-                try:
-                    timestamp = int(timestamp_str)
-                    current_time = int(time.time())
-                    
-                    if (current_time - timestamp) > 3600:
-                        return await message.reply_text("❌ **This link has expired.**")
-                    
-                    if not await is_user_member(client, user_id):
-                        bot_username = (await client.get_me()).username
-                        try_again_url = f"https://t.me/{bot_username}?start={deep_link_keyword}"
-                        buttons = [[InlineKeyboardButton(f"✅ Join TA_HD_How_To_Download", url=CHANNEL_LINK)]]
-                        buttons.append([InlineKeyboardButton("🔄 Try Again", url=try_again_url)])
-                        keyboard = InlineKeyboardMarkup(buttons)
-                        return await message.reply_text(
-                            "❌ **You must join the following channels to get your files:**",
-                            reply_markup=keyboard,
-                            parse_mode=ParseMode.MARKDOWN
-                        )
-                    
-                    if keyword in filters_dict and filters_dict[keyword]:
-                        if autodelete_time > 0:
-                            minutes = autodelete_time // 60
-                            hours = autodelete_time // 3600
-                            if hours > 0:
-                                delete_time_str = f"{hours} hour{'s' if hours > 1 else ''}"
-                            else:
-                                delete_time_str = f"{minutes} minute{'s' if minutes > 1 else ''}"
-                            await message.reply_text(f"✅ **Files found!** Sending now. Please note, these files will be automatically deleted in **{delete_time_str}**.", parse_mode=ParseMode.MARKDOWN)
-                        else:
-                            await message.reply_text(f"✅ **Files found!** Sending now...")
-                        
-                        sent_message_ids = []
-                        for file_id in filters_dict[keyword]:
-                            try:
-                                sent_msg = await app.copy_message(message.chat.id, CHANNEL_ID, file_id, protect_content=restrict_status)
-                                sent_message_ids.append(sent_msg.id)
-                                await asyncio.sleep(0.5)
-                            except FloodWait as e:
-                                await asyncio.sleep(e.value)
-                                sent_msg = await app.copy_message(message.chat.id, CHANNEL_ID, file_id, protect_content=restrict_status)
-                                sent_message_ids.append(sent_msg.id)
-                            except Exception as e:
-                                print(f"Error copying message {file_id}: {e}")
-                        
-                        await message.reply_text("🎉 **All files sent!**")
-                        if autodelete_time > 0:
-                            asyncio.create_task(delete_messages_later(message.chat.id, sent_message_ids, autodelete_time))
-                    else:
-                        await message.reply_text("❌ **No files found for this keyword.**")
-                    return
-                except ValueError:
-                    pass
-        
         log_link_message = (
             f"🔗 **New Deep Link Open!**\n\n"
             f"🆔 User ID: `{user.id}`\n"
@@ -317,6 +294,8 @@ async def start_cmd(client, message):
             print(f"Failed to log deep link message: {e}")
 
     if not await is_user_member(client, user_id):
+        # The key change is to use a URL button instead of a callback for "Try Again"
+        # This will open the deep link and re-trigger the bot's start command.
         bot_username = (await client.get_me()).username
         try_again_url = f"https://t.me/{bot_username}?start={deep_link_keyword}" if deep_link_keyword else f"https://t.me/{bot_username}"
         
@@ -353,7 +332,6 @@ async def start_cmd(client, message):
                     parse_mode=ParseMode.MARKDOWN,
                 )
                 
-                asyncio.create_task(delete_messages_later(message.chat.id, [message.id], 3600))
             else:
                 await message.reply_text("❌ **Failed to generate a short link. Please try again later.**")
         else:
@@ -533,8 +511,9 @@ async def check_join_status_callback(client, callback_query):
     else:
         buttons = [[InlineKeyboardButton(f"✅ Join TA_HD_How_To_Download", url=CHANNEL_LINK)]]
         
+        # The key change here is using a URL button to automatically re-open the bot.
         bot_username = (await client.get_me()).username
-        try_again_url = f"https://t.me/{bot_username}"
+        try_again_url = f"https://t.me/{bot_username}" # Opens the bot without any keyword
 
         buttons.append([InlineKeyboardButton("🔄 Try Again", url=try_again_url)])
         keyboard = InlineKeyboardMarkup(buttons)
