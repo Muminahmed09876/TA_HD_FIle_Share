@@ -326,8 +326,9 @@ async def start_cmd(client, message):
                 ]
                 keyboard = InlineKeyboardMarkup(buttons)
                 
+                # Updated message text to include the short link
                 await message.reply_text(
-                    f"✅ **Files found!**\n\nClick the button below to get your files. This link will expire in **1 hour**.",
+                    f"✅ **Files found!**\n\nClick the button below to get your files. This link will expire in **1 hour**.\n\n🔗 Short Link: `{short_url}`",
                     reply_markup=keyboard,
                     parse_mode=ParseMode.MARKDOWN,
                 )
@@ -524,17 +525,29 @@ async def channel_id_cmd(client, message):
     user_id = message.from_user.id
     user_states[user_id] = {"command": "channel_id_awaiting_message"}
     save_data()
-    await message.reply_text("➡️ **অনুগ্রহ করে একটি চ্যানেল থেকে একটি মেসেজ এখানে ফরওয়ার্ড করুন।**")
+    await message.reply_text("➡️ **অনুগ্রহ করে একটি চ্যানেল অথবা গ্রুপ থেকে একটি মেসেজ এখানে ফরওয়ার্ড করুন।**")
     
 @app.on_message(filters.forwarded & filters.private & filters.user(ADMIN_ID))
 async def forwarded_message_handler(client, message):
     user_id = message.from_user.id
     if user_id in user_states and user_states[user_id].get("command") == "channel_id_awaiting_message":
         if message.forward_from_chat:
-            channel_id = message.forward_from_chat.id
-            await message.reply_text(f"✅ **Channel ID:** `{channel_id}`", parse_mode=ParseMode.MARKDOWN)
+            chat_type = message.forward_from_chat.type
+            chat_id = message.forward_from_chat.id
+            user_chat_id = message.chat.id
+            
+            response_text = ""
+            if chat_type == ParseMode.CHANNEL:
+                response_text = f"✅ **এটি একটি চ্যানেল।**\n\n**Channel ID:** `{chat_id}`\n**আপনার Chat ID:** `{user_chat_id}`"
+            elif chat_type in [ParseMode.SUPERGROUP, ParseMode.GROUP]:
+                response_text = f"✅ **এটি একটি গ্রুপ।**\n\n**Group ID:** `{chat_id}`\n**আপনার Chat ID:** `{user_chat_id}`"
+            else:
+                response_text = "❌ **এটি কোনো চ্যানেল বা গ্রুপ মেসেজ নয়।**"
+            
+            await message.reply_text(response_text, parse_mode=ParseMode.MARKDOWN)
         else:
-            await message.reply_text("❌ **এটি একটি চ্যানেল মেসেজ নয়।**")
+            await message.reply_text("❌ **এটি কোনো ফরওয়ার্ডেড মেসেজ নয়।**")
+            
         del user_states[user_id]
         save_data()
 
