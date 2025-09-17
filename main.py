@@ -534,13 +534,14 @@ async def forwarded_message_handler(client, message):
         if message.forward_from_chat:
             chat_type = message.forward_from_chat.type
             chat_id = message.forward_from_chat.id
+            message_id = message.forward_from_message_id
             user_chat_id = message.chat.id
             
             response_text = ""
             if chat_type == ChatType.CHANNEL:
-                response_text = f"✅ **এটি একটি চ্যানেল।**\n\n**Channel ID:** `{chat_id}`\n**আপনার Chat ID:** `{user_chat_id}`"
+                response_text = f"✅ **এটি একটি চ্যানেল।**\n\n**Channel ID:** `{chat_id}`\n**File ID (Message ID):** `{message_id}`\n**আপনার Chat ID:** `{user_chat_id}`"
             elif chat_type in [ChatType.SUPERGROUP, ChatType.GROUP]:
-                response_text = f"✅ **এটি একটি গ্রুপ।**\n\n**Group ID:** `{chat_id}`\n**আপনার Chat ID:** `{user_chat_id}`"
+                response_text = f"✅ **এটি একটি গ্রুপ।**\n\n**Group ID:** `{chat_id}`\n**File ID (Message ID):** `{message_id}`\n**আপনার Chat ID:** `{user_chat_id}`"
             else:
                 response_text = "❌ **এটি কোনো চ্যানেল বা গ্রুপ মেসেজ নয়।**"
             
