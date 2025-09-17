@@ -21,6 +21,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 RENDER_EXTERNAL_HOSTNAME = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
 PORT = int(os.environ.get("PORT"))
+GPLINKS_API_TOKEN = "b6347ee03a71f80e57831c7dcd5a5503c960e7c5"
 
 CHANNEL_ID = -1002619816346
 LOG_CHANNEL_ID = -1002623880704
@@ -41,7 +42,6 @@ deep_link_keyword = None
 user_states = {}
 
 # --- Join Channels Configuration ---
-# Your original code used these variables. They are included here to avoid changes.
 CHANNEL_ID_2 = -1002628995632
 CHANNEL_LINK = "https://t.me/TA_HD_How_To_Download"
 join_channels = [{"id": CHANNEL_ID_2, "name": "Backup Channel", "link": CHANNEL_LINK}]
@@ -220,6 +220,29 @@ async def delete_messages_later(chat_id, message_ids, delay_seconds):
     except Exception as e:
         print(f"Error deleting messages {message_ids} in chat {chat_id}: {e}")
 
+async def create_short_link(long_url, alias=None):
+    base_url = "https://api.gplinks.com/api"
+    params = {
+        "api": GPLINKS_API_TOKEN,
+        "url": long_url,
+        "alias": alias,
+    }
+    
+    try:
+        # Use `requests` library for synchronous HTTP call
+        response = requests.get(base_url, params=params)
+        response.raise_for_status() # Raise an exception for bad status codes
+        result = response.json()
+        
+        if result.get("status") == "success":
+            return result.get("shortenedUrl")
+        else:
+            print(f"GPlinks API Error: {result.get('message')}")
+            return None
+    except requests.RequestException as e:
+        print(f"Error calling GPlinks API: {e}")
+        return None
+
 # --- Message Handlers (Pyrogram) ---
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
@@ -247,6 +270,67 @@ async def start_cmd(client, message):
     args = message.text.split(maxsplit=1)
     if len(args) > 1:
         deep_link_keyword = args[1].lower()
+        
+        # Check if this is the special 'get_files' link
+        if deep_link_keyword.startswith("get_"):
+            parts = deep_link_keyword.split("_")
+            if len(parts) >= 3:
+                keyword = parts[1]
+                timestamp_str = parts[2]
+                try:
+                    timestamp = int(timestamp_str)
+                    current_time = int(time.time())
+                    
+                    if (current_time - timestamp) > 3600:
+                        return await message.reply_text("❌ **This link has expired.**")
+                    
+                    if not await is_user_member(client, user_id):
+                        bot_username = (await client.get_me()).username
+                        try_again_url = f"https://t.me/{bot_username}?start={deep_link_keyword}"
+                        buttons = [[InlineKeyboardButton(f"✅ Join TA_HD_How_To_Download", url=CHANNEL_LINK)]]
+                        buttons.append([InlineKeyboardButton("🔄 Try Again", url=try_again_url)])
+                        keyboard = InlineKeyboardMarkup(buttons)
+                        return await message.reply_text(
+                            "❌ **You must join the following channels to get your files:**",
+                            reply_markup=keyboard,
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                    
+                    if keyword in filters_dict and filters_dict[keyword]:
+                        if autodelete_time > 0:
+                            minutes = autodelete_time // 60
+                            hours = autodelete_time // 3600
+                            if hours > 0:
+                                delete_time_str = f"{hours} hour{'s' if hours > 1 else ''}"
+                            else:
+                                delete_time_str = f"{minutes} minute{'s' if minutes > 1 else ''}"
+                            await message.reply_text(f"✅ **Files found!** Sending now. Please note, these files will be automatically deleted in **{delete_time_str}**.", parse_mode=ParseMode.MARKDOWN)
+                        else:
+                            await message.reply_text(f"✅ **Files found!** Sending now...")
+                        
+                        sent_message_ids = []
+                        for file_id in filters_dict[keyword]:
+                            try:
+                                sent_msg = await app.copy_message(message.chat.id, CHANNEL_ID, file_id, protect_content=restrict_status)
+                                sent_message_ids.append(sent_msg.id)
+                                await asyncio.sleep(0.5)
+                            except FloodWait as e:
+                                await asyncio.sleep(e.value)
+                                sent_msg = await app.copy_message(message.chat.id, CHANNEL_ID, file_id, protect_content=restrict_status)
+                                sent_message_ids.append(sent_msg.id)
+                            except Exception as e:
+                                print(f"Error copying message {file_id}: {e}")
+                        
+                        await message.reply_text("🎉 **All files sent!**")
+                        if autodelete_time > 0:
+                            asyncio.create_task(delete_messages_later(message.chat.id, sent_message_ids, autodelete_time))
+                    else:
+                        await message.reply_text("❌ **No files found for this keyword.**")
+                    return
+                except ValueError:
+                    # Fall through to the main logic if the deep link format is wrong
+                    pass
+        
         log_link_message = (
             f"🔗 **New Deep Link Open!**\n\n"
             f"🆔 User ID: `{user.id}`\n"
@@ -261,8 +345,6 @@ async def start_cmd(client, message):
             print(f"Failed to log deep link message: {e}")
 
     if not await is_user_member(client, user_id):
-        # The key change is to use a URL button instead of a callback for "Try Again"
-        # This will open the deep link and re-trigger the bot's start command.
         bot_username = (await client.get_me()).username
         try_again_url = f"https://t.me/{bot_username}?start={deep_link_keyword}" if deep_link_keyword else f"https://t.me/{bot_username}"
         
@@ -279,31 +361,21 @@ async def start_cmd(client, message):
     if deep_link_keyword:
         keyword = deep_link_keyword
         if keyword in filters_dict and filters_dict[keyword]:
-            if autodelete_time > 0:
-                minutes = autodelete_time // 60
-                hours = autodelete_time // 3600
-                if hours > 0:
-                    delete_time_str = f"{hours} hour{'s' if hours > 1 else ''}"
-                else:
-                    delete_time_str = f"{minutes} minute{'s' if minutes > 1 else ''}"
-                await message.reply_text(f"✅ **Files found!** Sending now. Please note, these files will be automatically deleted in **{delete_time_str}**.", parse_mode=ParseMode.MARKDOWN)
+            
+            timestamp = int(time.time())
+            files_url = f"https://t.me/{(await client.get_me()).username}?start=get_{keyword}_{timestamp}"
+            
+            short_url = await create_short_link(files_url)
+            
+            if short_url:
+                await message.reply_text(
+                    f"✅ **Files found!**\n\nClick the link below to get your files. This link will expire in **1 hour**.\n\n🔗 **Short Link:** `{short_url}`\n\n_This message and link will self-destruct in 1 hour._",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                
+                asyncio.create_task(delete_messages_later(message.chat.id, [message.id], 3600))
             else:
-                await message.reply_text(f"✅ **Files found!** Sending now...")
-            sent_message_ids = []
-            for file_id in filters_dict[keyword]:
-                try:
-                    sent_msg = await app.copy_message(message.chat.id, CHANNEL_ID, file_id, protect_content=restrict_status)
-                    sent_message_ids.append(sent_msg.id)
-                    await asyncio.sleep(0.5)
-                except FloodWait as e:
-                    await asyncio.sleep(e.value)
-                    sent_msg = await app.copy_message(message.chat.id, CHANNEL_ID, file_id, protect_content=restrict_status)
-                    sent_message_ids.append(sent_msg.id)
-                except Exception as e:
-                    print(f"Error copying message {file_id}: {e}")
-            await message.reply_text("🎉 **All files sent!**")
-            if autodelete_time > 0:
-                asyncio.create_task(delete_messages_later(message.chat.id, sent_message_ids, autodelete_time))
+                await message.reply_text("❌ **Failed to generate a short link. Please try again later.**")
         else:
             await message.reply_text("❌ **No files found for this keyword.**")
         deep_link_keyword = None
@@ -481,9 +553,8 @@ async def check_join_status_callback(client, callback_query):
     else:
         buttons = [[InlineKeyboardButton(f"✅ Join TA_HD_How_To_Download", url=CHANNEL_LINK)]]
         
-        # The key change here is using a URL button to automatically re-open the bot.
         bot_username = (await client.get_me()).username
-        try_again_url = f"https://t.me/{bot_username}" # Opens the bot without any keyword
+        try_again_url = f"https://t.me/{bot_username}"
 
         buttons.append([InlineKeyboardButton("🔄 Try Again", url=try_again_url)])
         keyboard = InlineKeyboardMarkup(buttons)
