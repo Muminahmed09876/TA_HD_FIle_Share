@@ -3,7 +3,7 @@ import asyncio
 import time
 import threading
 from pyrogram import Client, filters
-from pyrogram.enums import ParseMode
+from pyrogram.enums import ParseMode, ChatType
 from pyrogram.errors import MessageNotModified, FloodWait, UserNotParticipant
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pymongo import MongoClient
@@ -537,9 +537,9 @@ async def forwarded_message_handler(client, message):
             user_chat_id = message.chat.id
             
             response_text = ""
-            if chat_type == ParseMode.CHANNEL:
+            if chat_type == ChatType.CHANNEL:
                 response_text = f"✅ **এটি একটি চ্যানেল।**\n\n**Channel ID:** `{chat_id}`\n**আপনার Chat ID:** `{user_chat_id}`"
-            elif chat_type in [ParseMode.SUPERGROUP, ParseMode.GROUP]:
+            elif chat_type in [ChatType.SUPERGROUP, ChatType.GROUP]:
                 response_text = f"✅ **এটি একটি গ্রুপ।**\n\n**Group ID:** `{chat_id}`\n**আপনার Chat ID:** `{user_chat_id}`"
             else:
                 response_text = "❌ **এটি কোনো চ্যানেল বা গ্রুপ মেসেজ নয়।**"
