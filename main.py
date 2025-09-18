@@ -336,13 +336,15 @@ async def start_cmd(client, message):
             
             # If the user's deep link is a "get" link, send the files.
             if args[1].lower().startswith("get_"):
+                sent_messages = []
                 try:
                     for msg_id in filters_dict[keyword]:
-                        await client.copy_message(
+                        msg = await client.copy_message(
                             chat_id=message.chat.id,
                             from_chat_id=CHANNEL_ID,
                             message_id=msg_id
                         )
+                        sent_messages.append(msg.id)
                         await asyncio.sleep(0.5) # Add a small delay
                     
                     await message.reply_text(f"✅ **Files sent!**", parse_mode=ParseMode.MARKDOWN)
@@ -350,7 +352,11 @@ async def start_cmd(client, message):
                 except Exception as e:
                     await message.reply_text("❌ **An error occurred while trying to retrieve the files.** Please try again later.")
                     print(f"Error retrieving files: {e}")
-            
+                
+                # New logic: If auto-delete is ON, delete the files
+                if autodelete_time > 0:
+                    asyncio.create_task(delete_messages_later(message.chat.id, sent_messages, autodelete_time))
+
             # If it's a regular deep link, generate and send the short link.
             else:
                 timestamp = int(time.time())
