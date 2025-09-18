@@ -337,6 +337,16 @@ async def start_cmd(client, message):
             # If the user's deep link is a "get" link, send the files.
             if args[1].lower().startswith("get_"):
                 sent_messages = []
+                
+                # Determine the initial message based on autodelete_time
+                initial_message = "✅ Files found! Sending now..."
+                if autodelete_time > 0:
+                    time_map = {1800: "30 minutes", 3600: "1 hour", 43200: "12 hours", 86400: "24 hours"}
+                    time_str = time_map.get(autodelete_time, f"{autodelete_time} seconds")
+                    initial_message = f"✅ Files found! Sending now. Please note, these files will be automatically deleted in **{time_str}**."
+                
+                await message.reply_text(initial_message, parse_mode=ParseMode.MARKDOWN)
+
                 try:
                     for msg_id in filters_dict[keyword]:
                         msg = await client.copy_message(
@@ -347,7 +357,7 @@ async def start_cmd(client, message):
                         sent_messages.append(msg.id)
                         await asyncio.sleep(0.5) # Add a small delay
                     
-                    await message.reply_text(f"✅ **Files sent!**", parse_mode=ParseMode.MARKDOWN)
+                    await message.reply_text("🎉 All files sent!", parse_mode=ParseMode.MARKDOWN)
                 
                 except Exception as e:
                     await message.reply_text("❌ **An error occurred while trying to retrieve the files.** Please try again later.")
