@@ -278,21 +278,43 @@ async def start_cmd(client, message):
         print(f"Failed to send log message: {e}")
     
     args = message.text.split(maxsplit=1)
+    keyword = None
+    
     if len(args) > 1:
-        deep_link_keyword = args[1].lower()
-        log_link_message = (
-            f"🔗 **New Deep Link Open!**\n\n"
-            f"🆔 User ID: `{user.id}`\n"
-            f"👤 User Name: `{user.first_name} {user.last_name or ''}`\n"
-            f"🔗 Link: `https://t.me/{(await client.get_me()).username}?start={deep_link_keyword}`"
-        )
-        if user.username:
-            log_link_message += f"\nUsername: @{user.username}"
-        try:
-            await client.send_message(LOG_CHANNEL_ID, log_link_message, parse_mode=ParseMode.MARKDOWN)
-        except Exception as e:
-            print(f"Failed to log deep link message: {e}")
-
+        # Check for deep links from GPlinks
+        if args[1].lower().startswith("get_"):
+            parts = args[1].lower().split('_')
+            if len(parts) >= 2:
+                keyword = parts[1]
+                
+                # New logic: Check if the timestamp has expired
+                if len(parts) > 2:
+                    try:
+                        timestamp = int(parts[2])
+                        current_time = int(time.time())
+                        if current_time - timestamp > 3600: # 3600 seconds = 1 hour
+                            return await message.reply_text("❌ **এই লিংকটি মেয়াদ উত্তীর্ণ হয়ে গেছে।**", parse_mode=ParseMode.MARKDOWN)
+                    except (ValueError, IndexError):
+                        pass # Ignore if timestamp is invalid
+        else:
+            # Handle standard deep links
+            deep_link_keyword = args[1].lower()
+            keyword = deep_link_keyword
+        
+        if keyword:
+            log_link_message = (
+                f"🔗 **New Deep Link Open!**\n\n"
+                f"🆔 User ID: `{user.id}`\n"
+                f"👤 User Name: `{user.first_name} {user.last_name or ''}`\n"
+                f"🔗 Link: `https://t.me/{(await client.get_me()).username}?start={args[1]}`"
+            )
+            if user.username:
+                log_link_message += f"\nUsername: @{user.username}"
+            try:
+                await client.send_message(LOG_CHANNEL_ID, log_link_message, parse_mode=ParseMode.MARKDOWN)
+            except Exception as e:
+                print(f"Failed to log deep link message: {e}")
+    
     if not await is_user_member(client, user_id):
         # The key change is to use a URL button instead of a callback for "Try Again"
         # This will open the deep link and re-trigger the bot's start command.
@@ -309,34 +331,57 @@ async def start_cmd(client, message):
             parse_mode=ParseMode.MARKDOWN
         )
 
-    if deep_link_keyword:
-        keyword = deep_link_keyword
+    if keyword:
         if keyword in filters_dict and filters_dict[keyword]:
             
-            timestamp = int(time.time())
-            files_url = f"https://t.me/{(await client.get_me()).username}?start=get_{keyword}_{timestamp}"
+            # If the user's deep link is a "get" link, send the files.
+            if args[1].lower().startswith("get_"):
+                try:
+                    for msg_id in filters_dict[keyword]:
+                        await client.copy_message(
+                            chat_id=message.chat.id,
+                            from_chat_id=CHANNEL_ID,
+                            message_id=msg_id
+                        )
+                        await asyncio.sleep(0.5) # Add a small delay
+                    
+                    await message.reply_text(f"✅ **Files sent!**", parse_mode=ParseMode.MARKDOWN)
+                
+                except Exception as e:
+                    await message.reply_text("❌ **An error occurred while trying to retrieve the files.** Please try again later.")
+                    print(f"Error retrieving files: {e}")
             
-            short_url = await create_short_link(files_url)
-            
-            if short_url:
-                
-                buttons = [
-                    [InlineKeyboardButton("Open Link", url=short_url)],
-                    [InlineKeyboardButton("How to open the link", url="https://t.me/TA_HD_How_To_Download")]
-                ]
-                keyboard = InlineKeyboardMarkup(buttons)
-                
-                # Updated message text to include the short link
-                await message.reply_text(
-                    f"✅ **Files found!**\n\nClick the button below to get your files. This link will expire in **1 hour**.\n\n🔗 Short Link: `{short_url}`",
-                    reply_markup=keyboard,
-                    parse_mode=ParseMode.MARKDOWN,
-                )
-                
+            # If it's a regular deep link, generate and send the short link.
             else:
-                await message.reply_text("❌ **Failed to generate a short link. Please try again later.**")
+                timestamp = int(time.time())
+                files_url = f"https://t.me/{(await client.get_me()).username}?start=get_{keyword}_{timestamp}"
+                short_url = await create_short_link(files_url)
+                
+                if short_url:
+                    buttons = [
+                        [InlineKeyboardButton("Open Link", url=short_url)],
+                        [InlineKeyboardButton("How to open the link", url="https://t.me/TA_HD_How_To_Download")]
+                    ]
+                    keyboard = InlineKeyboardMarkup(buttons)
+                    
+                    # Store the sent message object
+                    sent_link_message = await message.reply_text(
+                        f"✅ **Files found!**\n\nClick the button below to get your files. This link will expire in **1 hour**.\n\n🔗 Short Link: `{short_url}`",
+                        reply_markup=keyboard,
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+
+                    # Schedule the deletion of the link message only
+                    if autodelete_time > 0:
+                        asyncio.create_task(delete_messages_later(sent_link_message.chat.id, [sent_link_message.id], autodelete_time))
+                        
+                else:
+                    await message.reply_text("❌ **Failed to generate a short link. Please try again later.**")
+
         else:
+            # This is the "no files found" message
             await message.reply_text("❌ **No files found for this keyword.**")
+            
         deep_link_keyword = None
         return
     
