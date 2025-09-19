@@ -2,18 +2,15 @@ import os
 import asyncio
 import time
 import threading
-from pyrogram import Client, filters, idle
+from pyrogram import Client, filters
 from pyrogram.enums import ParseMode, ChatType
 from pyrogram.errors import MessageNotModified, FloodWait, UserNotParticipant
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pymongo import MongoClient
 from dotenv import load_dotenv
 from flask import Flask, render_template_string
 import requests
 from datetime import datetime, timedelta
-import re
-from pathlib import Path
-from pyrogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 
 # --- Load Environment Variables ---
 load_dotenv()
@@ -256,72 +253,6 @@ async def create_short_link(long_url, alias=None):
         print(f"Error calling GPlinks API: {e}")
         return None
 
-# --- New Feature Global Variables and Helper Functions ---
-SUBSCRIBERS = set()
-USER_THUMBS = {}
-USER_THUMB_TIME = {}
-USER_CAPTIONS = {}
-SET_THUMB_REQUEST = set()
-SET_CAPTION_REQUEST = set()
-EDIT_CAPTION_MODE = set()
-USER_COUNTERS = {}
-TASKS = {}
-TMP = Path("./downloads")
-TMP.mkdir(exist_ok=True)
-
-def is_admin(user_id):
-    return user_id == ADMIN_ID
-
-def parse_time(time_str):
-    seconds = 0
-    time_str = time_str.lower()
-    matches = re.findall(r"(\d+)([smhd])", time_str)
-    for value, unit in matches:
-        value = int(value)
-        if unit == 's':
-            seconds += value
-        elif unit == 'm':
-            seconds += value * 60
-        elif unit == 'h':
-            seconds += value * 3600
-        elif unit == 'd':
-            seconds += value * 86400
-    return seconds
-
-async def set_bot_commands():
-    commands = [
-        BotCommand("start", "bot শুরু করুন ও কমান্ড দেখুন"),
-        BotCommand("help", "সাহায্য"),
-        BotCommand("upload_url", "URL থেকে ফাইল আপলোড"),
-        BotCommand("setthumb", "থাম্বনেইল সেট করুন"),
-        BotCommand("view_thumb", "থাম্বনেইল দেখুন"),
-        BotCommand("del_thumb", "থাম্বনেইল মুছে ফেলুন"),
-        BotCommand("set_caption", "ক্যাপশন সেট করুন"),
-        BotCommand("view_caption", "ক্যাপশন দেখুন"),
-        BotCommand("edit_caption_mode", "শুধু ক্যাপশন এডিট করার মোড টগল করুন"),
-        BotCommand("rename", "ফাইল রিনেম করুন"),
-        BotCommand("broadcast", "ব্রডকাস্ট"),
-        BotCommand("delete", "ফিল্টার ডিলিট করুন"),
-        BotCommand("restrict", "মেসেজ ফরওয়ার্ডিং সীমাবদ্ধতা টগল করুন"),
-        BotCommand("ban", "ইউজারকে ব্যান করুন"),
-        BotCommand("unban", "ইউজারকে আনব্যান করুন"),
-        BotCommand("auto_delete", "অটো-ডিলিট সময় সেট করুন"),
-        BotCommand("channel_id", "চ্যানেল আইডি দেখুন")
-    ]
-    await app.set_bot_commands(commands, scope=BotCommandScopeDefault())
-
-def delete_caption_keyboard():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("ক্যাপশন মুছে ফেলুন", callback_data="delete_caption")]])
-
-async def handle_url_download_and_upload(c, m: Message, url):
-    # This is a placeholder for the actual download and upload logic.
-    # The actual implementation would go here. For now, it just sends a message.
-    await m.reply_text(f"আমি এখন `{url}` থেকে ফাইল ডাউনলোড করে আপলোড করব।")
-
-async def process_file_and_upload(c, m: Message, file_path, original_name, messages_to_delete):
-    # Placeholder for the file processing and upload logic.
-    await m.reply_text(f"`{original_name}` নামে ফাইল আপলোড হচ্ছে।")
-    
 # --- Message Handlers (Pyrogram) ---
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
@@ -333,12 +264,18 @@ async def start_cmd(client, message):
     if user_id in banned_users:
         return await message.reply_text("❌ **You are banned from using this bot.**")
 
-    # New feature: add user to SUBSCRIBERS and set bot commands
-    SUBSCRIBERS.add(message.chat.id)
-    await set_bot_commands()
-    text_message = (
-        "👋 **Welcome!** You can access files via special links."
+    user = message.from_user
+    log_message = (
+        f"➡️ **New User**\n"
+        f"🆔 User ID: `{user_id}`\n"
+        f"👤 Full Name: `{user.first_name} {user.last_name or ''}`"
     )
+    if user.username:
+        log_message += f"\n🔗 Username: @{user.username}"
+    try:
+        await client.send_message(LOG_CHANNEL_ID, log_message, parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        print(f"Failed to send log message: {e}")
     
     args = message.text.split(maxsplit=1)
     keyword = None
@@ -367,12 +304,12 @@ async def start_cmd(client, message):
         if keyword:
             log_link_message = (
                 f"🔗 **New Deep Link Open!**\n\n"
-                f"🆔 User ID: `{user_id}`\n"
-                f"👤 User Name: `{message.from_user.first_name} {message.from_user.last_name or ''}`\n"
+                f"🆔 User ID: `{user.id}`\n"
+                f"👤 User Name: `{user.first_name} {user.last_name or ''}`\n"
                 f"🔗 Link: `https://t.me/{(await client.get_me()).username}?start={args[1]}`"
             )
-            if message.from_user.username:
-                log_link_message += f"\nUsername: @{message.from_user.username}"
+            if user.username:
+                log_link_message += f"\nUsername: @{user.username}"
             try:
                 await client.send_message(LOG_CHANNEL_ID, log_link_message, parse_mode=ParseMode.MARKDOWN)
             except Exception as e:
@@ -477,7 +414,7 @@ async def start_cmd(client, message):
         )
         await message.reply_text(admin_commands, parse_mode=ParseMode.MARKDOWN)
     else:
-        await message.reply_text(text_message, parse_mode=ParseMode.MARKDOWN)
+        await message.reply_text("👋 **Welcome!** You can access files via special links.")
 
 @app.on_message(filters.channel & filters.text & filters.chat(CHANNEL_ID))
 async def channel_text_handler(client, message):
@@ -676,184 +613,6 @@ async def forwarded_message_handler(client, message):
         del user_states[user_id]
         save_data()
 
-# --- NEW FEATURES: Command Handlers ---
-
-# start command handler with new features
-@app.on_message(filters.command("start") & filters.private)
-async def start_handler(c, m: Message):
-    await set_bot_commands()
-    SUBSCRIBERS.add(m.chat.id)
-    text = (
-        "Hi! আমি URL uploader bot.\n\n"
-        "নোট: বটের অনেক কমান্ড শুধু অ্যাডমিন (owner) চালাতে পারবে।\n\n"
-        "Commands:\n"
-        "/upload_url <url> - URL থেকে ডাউনলোড ও Telegram-এ আপলোড (admin only)\n"
-        "/setthumb - একটি ছবি পাঠান, সেট হবে আপনার থাম্বনেইল (admin only)\n"
-        "/view_thumb - আপনার থাম্বনেইল দেখুন (admin only)\n"
-        "/del_thumb - আপনার থাম্বনেইল মুছে ফেলুন (admin only)\n"
-        "/set_caption - একটি ক্যাপশন সেট করুন (admin only)\n"
-        "/view_caption - আপনার ক্যাপশন দেখুন (admin only)\n"
-        "/edit_caption_mode - শুধু ক্যাপশন এডিট করার মোড টগল করুন (admin only)\n"
-        "/rename <newname.ext> - reply করা ভিডিও রিনেম করুন (admin only)\n"
-        "/broadcast <text> - ব্রডকাস্ট (শুধুমাত্র অ্যাডমিন)\n"
-        "/help - সাহায্য"
-    )
-    await m.reply_text(text)
-
-# help command handler
-@app.on_message(filters.command("help") & filters.private)
-async def help_handler(c, m):
-    await start_handler(c, m)
-
-# setthumb command handler
-@app.on_message(filters.command("setthumb") & filters.private)
-async def setthumb_prompt(c, m):
-    if not is_admin(m.from_user.id):
-        await m.reply_text("আপনার অনুমতি নেই এই কমান্ড চালানোর।")
-        return
-    
-    uid = m.from_user.id
-    if len(m.command) > 1:
-        time_str = " ".join(m.command[1:])
-        seconds = parse_time(time_str)
-        if seconds > 0:
-            USER_THUMB_TIME[uid] = seconds
-            await m.reply_text(f"থাম্বনেইল তৈরির সময় সেট হয়েছে: {seconds} সেকেন্ড।")
-        else:
-            await m.reply_text("সঠিক ফরম্যাটে সময় দিন। উদাহরণ: `/setthumb 5s`, `/setthumb 1m`, `/setthumb 1m 30s`")
-    else:
-        SET_THUMB_REQUEST.add(uid)
-        await m.reply_text("একটি ছবি পাঠান (photo) — সেট হবে আপনার থাম্বনেইল।")
-
-# view_thumb command handler
-@app.on_message(filters.command("view_thumb") & filters.private)
-async def view_thumb_cmd(c, m: Message):
-    if not is_admin(m.from_user.id):
-        await m.reply_text("আপনার অনুমতি নেই এই কমান্ড চালানোর।")
-        return
-    uid = m.from_user.id
-    thumb_path = USER_THUMBS.get(uid)
-    thumb_time = USER_THUMB_TIME.get(uid)
-    
-    if thumb_path and Path(thumb_path).exists():
-        await c.send_photo(chat_id=m.chat.id, photo=thumb_path, caption="এটা আপনার সেভ করা থাম্বনেইল।")
-    elif thumb_time:
-        await m.reply_text(f"আপনার থাম্বনেইল তৈরির সময় সেট করা আছে: {thumb_time} সেকেন্ড।")
-    else:
-        await m.reply_text("আপনার কোনো থাম্বনেইল বা থাম্বনেইল তৈরির সময় সেভ করা নেই। /setthumb দিয়ে সেট করুন।")
-
-# del_thumb command handler
-@app.on_message(filters.command("del_thumb") & filters.private)
-async def del_thumb_cmd(c, m: Message):
-    if not is_admin(m.from_user.id):
-        await m.reply_text("আপনার অনুমতি নেই এই কমান্ড চালানোর।")
-        return
-    uid = m.from_user.id
-    thumb_path = USER_THUMBS.get(uid)
-    if thumb_path and Path(thumb_path).exists():
-        try:
-            Path(thumb_path).unlink()
-        except Exception:
-            pass
-        USER_THUMBS.pop(uid, None)
-    
-    if uid in USER_THUMB_TIME:
-        USER_THUMB_TIME.pop(uid)
-
-    if not (thumb_path or uid in USER_THUMB_TIME):
-        await m.reply_text("আপনার কোনো থাম্বনেইল সেভ করা নেই।")
-    else:
-        await m.reply_text("আপনার থাম্বনেইল/থাম্বনেইল তৈরির সময় মুছে ফেলা হয়েছে।")
-
-# set_caption command handler
-@app.on_message(filters.command("set_caption") & filters.private)
-async def set_caption_prompt(c, m: Message):
-    if not is_admin(m.from_user.id):
-        await m.reply_text("আপনার অনুমতি নেই এই কমান্ড চালানোর।")
-        return
-    SET_CAPTION_REQUEST.add(m.from_user.id)
-    # Reset counter data when a new caption is about to be set
-    USER_COUNTERS.pop(m.from_user.id, None)
-    await m.reply_text("ক্যাপশন দিন। কোড - [01 (+01, 01u)], [re (480p, 720p, 1080p)]")
-
-# view_caption command handler
-@app.on_message(filters.command("view_caption") & filters.private)
-async def view_caption_cmd(c, m: Message):
-    if not is_admin(m.from_user.id):
-        await m.reply_text("আপনার অনুমতি নেই এই কমান্ড চালানোর।")
-        return
-    uid = m.from_user.id
-    caption = USER_CAPTIONS.get(uid)
-    if caption:
-        await m.reply_text(f"আপনার সেভ করা ক্যাপশন:\n\n`{caption}`", reply_markup=delete_caption_keyboard())
-    else:
-        await m.reply_text("আপনার কোনো ক্যাপশন সেভ করা নেই। /set_caption দিয়ে সেট করুন।")
-
-# edit_caption_mode command handler
-@app.on_message(filters.command("edit_caption_mode") & filters.private)
-async def toggle_edit_caption_mode(c, m: Message):
-    uid = m.from_user.id
-    if not is_admin(uid):
-        await m.reply_text("আপনার অনুমতি নেই এই কমান্ড চালানোর।")
-        return
-
-    if uid in EDIT_CAPTION_MODE:
-        EDIT_CAPTION_MODE.discard(uid)
-        await m.reply_text("edit video caption mod off.\nএখন থেকে আপলোড করা ভিডিওর রিনেম ও থাম্বনেইল পরিবর্তন হবে, এবং সেভ করা ক্যাপশন যুক্ত হবে।")
-    else:
-        EDIT_CAPTION_MODE.add(uid)
-        await m.reply_text("edit video caption mod on.\nএখন থেকে শুধু সেভ করা ক্যাপশন ভিডিওতে যুক্ত হবে। ভিডিওর নাম এবং থাম্বনেইল একই থাকবে।")
-
-# upload_url command handler
-@app.on_message(filters.command("upload_url") & filters.private)
-async def upload_url_cmd(c, m: Message):
-    if not is_admin(m.from_user.id):
-        await m.reply_text("আপনার অনুমতি নেই এই কমান্ড চালানোর।")
-        return
-    if not m.command or len(m.command) < 2:
-        await m.reply_text("ব্যবহার: /upload_url <url>\nউদাহরণ: /upload_url https://example.com/file.mp4")
-        return
-    url = m.text.split(None, 1)[1].strip()
-    asyncio.create_task(handle_url_download_and_upload(c, m, url))
-
-# rename command handler
-@app.on_message(filters.command("rename") & filters.private)
-async def rename_cmd(c, m: Message):
-    uid = m.from_user.id
-    if not is_admin(uid):
-        await m.reply_text("আপনার অনুমতি নেই।")
-        return
-    if not m.reply_to_message or not (m.reply_to_message.video or m.reply_to_message.document):
-        await m.reply_text("ভিডিও/ডকুমেন্ট ফাইলের reply দিয়ে এই কমান্ড দিন।\nUsage: /rename new_name.mp4")
-        return
-    if len(m.command) < 2:
-        await m.reply_text("নতুন ফাইল নাম দিন। উদাহরণ: /rename new_video.mp4")
-        return
-    new_name = m.text.split(None, 1)[1].strip()
-    new_name = re.sub(r"[\\/*?\"<>|:]", "_", new_name)
-    await m.reply_text(f"ভিডিও রিনেম করা হবে: {new_name}\n(রিনেম করতে reply করা ফাইলটি পুনরায় ডাউনলোড করে আপলোড করা হবে)")
-
-    cancel_event = asyncio.Event()
-    TASKS.setdefault(uid, []).append(cancel_event)
-    try:
-        status_msg = await m.reply_text("রিনেমের জন্য ফাইল ডাউনলোড করা হচ্ছে...", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", "cancel_download")]]))
-    except Exception:
-        status_msg = await m.reply_text("রিনেমের জন্য ফাইল ডাউনলোড করা হচ্ছে...", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", "cancel_download")]]))
-    tmp_out = TMP / f"rename_{uid}_{int(datetime.now().timestamp())}_{new_name}"
-    try:
-        await m.reply_to_message.download(file_name=str(tmp_out))
-        try:
-            await status_msg.edit_text("ডাউনলোড সম্পন্ন, এখন নতুন নাম দিয়ে আপলোড হচ্ছে...", reply_markup=None)
-        except Exception:
-            await m.reply_text("ডাউনলোড সম্পন্ন, এখন নতুন নাম দিয়ে আপলোড হচ্ছে...", reply_markup=None)
-        await process_file_and_upload(c, m, tmp_out, original_name=new_name, messages_to_delete=[status_msg.id])
-    except Exception as e:
-        await m.reply_text(f"রিনেম ত্রুটি: {e}")
-    finally:
-        try:
-            TASKS[uid].remove(cancel_event)
-        except Exception:
-            pass
 
 # --- Run Services ---
 def run_flask_and_pyrogram():
